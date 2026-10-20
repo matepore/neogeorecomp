@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(neogeorecomp VERSION 0.2.0 LANGUAGES C)
+project(neogeorecomp VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Tests build by default only when this is the top-level project, not when
 # a game pulls the toolkit in with add_subdirectory().
@@ -14,7 +16,7 @@ endif()
 option(NEOGEORECOMP_BUILD_TESTS "Build the conformance harness" ${ng_tests_default})
 
 set(NG_EXT ${CMAKE_CURRENT_SOURCE_DIR}/ext)
-if(NOT EXISTS ${NG_EXT}/musashi/m68k_in.c OR NOT EXISTS ${NG_EXT}/z80/z80.c)
+if(NOT EXISTS ${NG_EXT}/musashi/m68k_in.c OR NOT EXISTS ${NG_EXT}/z80/z80.c OR NOT EXISTS ${NG_EXT}/ymfm/src/ymfm_opn.cpp)
     message(FATAL_ERROR "Submodules missing: run  git submodule update --init")
 endif()
 
@@ -59,6 +61,14 @@ if(MSVC)
     target_compile_options(z80core PRIVATE /w)
 endif()
 
+# ---- ymfm (BSD-3): YM2610 synthesis ----
+add_library(ymfm STATIC
+    ${NG_EXT}/ymfm/src/ymfm_opn.cpp
+    ${NG_EXT}/ymfm/src/ymfm_adpcm.cpp
+    ${NG_EXT}/ymfm/src/ymfm_ssg.cpp
+    ${NG_EXT}/ymfm/src/ymfm_misc.cpp)
+target_include_directories(ymfm SYSTEM PUBLIC ${NG_EXT}/ymfm/src)
+
 # ---- runtime ----
 # SDL2 provides the window; without it the runtime builds headless-only.
 find_package(SDL2 CONFIG QUIET)
@@ -72,12 +82,13 @@ add_library(neogeorecomp STATIC
     src/video.c
     src/io.c
     src/audio.c
+    src/ym2610.cpp
     src/platform.c
     src/romload.c)
 target_include_directories(neogeorecomp
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(neogeorecomp PUBLIC musashi z80core)
+target_link_libraries(neogeorecomp PUBLIC musashi z80core ymfm)
 if(TARGET SDL2::SDL2)
     # Visible to the game's CMakeLists too, so it can ship the DLL.
     set_target_properties(SDL2::SDL2 PROPERTIES IMPORTED_GLOBAL TRUE)

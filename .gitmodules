@@ -4,3 +4,6 @@
 [submodule "ext/z80"]
 	path = ext/z80
 	url = https://github.com/superzazu/z80.git
+[submodule "ext/ymfm"]
+	path = ext/ymfm
+	url = https://github.com/aaronsgiles/ymfm

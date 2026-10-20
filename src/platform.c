@@ -74,6 +74,7 @@ int  window_open(const char *title, int scale) {
     return -1;
 }
 bool window_frame(const uint32_t *fb, ng_input_t *in) { (void)fb; (void)in; return true; }
+void window_audio(const int16_t *samples, size_t frames) { (void)samples; (void)frames; }
 void window_close(void) {}
 #endif
 
@@ -96,10 +97,48 @@ bool platform_frame(const uint32_t *fb, ng_input_t *in) {
     return s_headless ? true : window_frame(fb, in);
 }
 
-void platform_audio(const int16_t *samples, size_t frames) { (void)samples; (void)frames; }
+/* ---- audio: the window, and --wav ---- */
+
+static FILE *s_wav;
+static uint32_t s_wav_bytes;
+static int s_mute;
+
+static void put16le(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void put32le(uint8_t *p, uint32_t v) { put16le(p, v); put16le(p + 2, v >> 16); }
+
+static void wav_header(FILE *f, uint32_t data_bytes) {
+    uint8_t h[44];
+    memcpy(h, "RIFF", 4); put32le(h + 4, 36 + data_bytes); memcpy(h + 8, "WAVEfmt ", 8);
+    put32le(h + 16, 16); put16le(h + 20, 1); put16le(h + 22, 2);
+    put32le(h + 24, NG_AUDIO_RATE); put32le(h + 28, NG_AUDIO_RATE * 4); put16le(h + 32, 4); put16le(h + 34, 16);
+    memcpy(h + 36, "data", 4); put32le(h + 40, data_bytes);
+    fwrite(h, 1, 44, f);
+}
+
+int platform_wav(const char *path) {
+    s_wav = fopen(path, "wb");
+    if (!s_wav) { fprintf(stderr, "error: cannot write %s\n", path); return -1; }
+    wav_header(s_wav, 0);
+    return 0;
+}
+
+void platform_mute(void) { s_mute = 1; }
+
+void platform_audio(const int16_t *samples, size_t frames) {
+    if (s_wav) {
+        for (size_t i = 0; i < frames * 2; i++) {   /* WAV is little-endian */
+            uint8_t b[2];
+            put16le(b, (uint16_t)samples[i]);
+            fwrite(b, 1, 2, s_wav);
+        }
+        s_wav_bytes += (uint32_t)(frames * 4);
+    }
+    if (!s_headless && !s_mute) window_audio(samples, frames);
+}
 
 void platform_shutdown(void) {
     if (s_rec) { pclose(s_rec); s_rec = NULL; }
+    if (s_wav) { fseek(s_wav, 0, SEEK_SET); wav_header(s_wav, s_wav_bytes); fclose(s_wav); s_wav = NULL; }
     if (!s_headless) window_close();
 }
 

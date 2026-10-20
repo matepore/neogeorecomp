@@ -24,8 +24,8 @@ static uint32_t s_fb[NG_SCREEN_W * NG_SCREEN_H];
 
 #define MAX_SHOTS 64
 typedef struct {
-    const char *rom_path, *bios_path, *record, *input, *dump_misses, *bios_name;
-    int headless, interp, verify, scale;
+    const char *rom_path, *bios_path, *record, *input, *dump_misses, *bios_name, *wav;
+    int headless, interp, verify, scale, mute;
     long frames;
     struct { long frame; const char *path; } shots[MAX_SHOTS];
     int nshots;
@@ -45,7 +45,9 @@ static void usage(const char *prog) {
         "  --interp              run everything in the interpreter\n"
         "  --verify              re-run every recompiled block in the interpreter and compare\n"
         "  --dump-misses FILE    write interpreted entry points for the recompiler\n"
-        "  --scale N             window scale (default 3)\n", prog);
+        "  --scale N             window scale (default 3)\n"
+        "  --wav FILE            write the audio to a WAV file\n"
+        "  --mute                no sound from the window\n", prog);
 }
 
 static int parse_args(int argc, char **argv, options_t *o) {
@@ -65,6 +67,8 @@ static int parse_args(int argc, char **argv, options_t *o) {
         else if (!strcmp(a, "--verify")) o->verify = 1;
         else if (!strcmp(a, "--dump-misses") && next) { o->dump_misses = next; i++; }
         else if (!strcmp(a, "--scale") && next) { o->scale = atoi(next); i++; }
+        else if (!strcmp(a, "--wav") && next) { o->wav = next; i++; }
+        else if (!strcmp(a, "--mute")) o->mute = 1;
         else if (!strcmp(a, "--screenshot") && next) {
             const char *colon = strchr(next, ':');
             if (!colon || o->nshots == MAX_SHOTS) { usage(argv[0]); return -1; }
@@ -235,12 +239,14 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
     exec_init(funcs, nfuncs, o.interp || nfuncs == 0);
     exec_set_verify(o.verify);
     if (platform_init(game->title, o.scale, o.headless, o.record)) return 1;
+    if (o.mute) platform_mute();
+    if (o.wav && platform_wav(o.wav)) return 1;
 
     fprintf(stderr, "[neogeorecomp] %s: %zu recompiled entry points%s\n", game->name, nfuncs,
             (o.interp || nfuncs == 0) ? ", interpreter only" : "");
     power_on();
 
-    static int16_t samples[2048 * 2];
+    static int16_t samples[4096 * 2];
     for (long frame = 0; o.frames < 0 || frame < o.frames; frame++) {
         ng_input_t in;
         memset(&in, 0, sizeof(in));
@@ -248,7 +254,7 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
         script_input(frame, &in);
         io_set_inputs(&in);
         run_frame();
-        platform_audio(samples, audio_take_samples(samples, 800));
+        platform_audio(samples, audio_take_samples(samples, 4096));
         for (int i = 0; i < o.nshots; i++)
             if (o.shots[i].frame == frame) {
                 if (write_png(o.shots[i].path, s_fb, NG_SCREEN_W, NG_SCREEN_H))

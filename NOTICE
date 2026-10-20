@@ -16,3 +16,8 @@ directory:
   Copyright (c) 2019 Nicolas Allemand. MIT License.
   https://github.com/superzazu/z80
   Used as the sound CPU.
+
+- ymfm (ext/ymfm) - Yamaha FM sound chip emulator
+  Copyright (c) 2021 Aaron Giles. BSD 3-Clause License.
+  https://github.com/aaronsgiles/ymfm
+  Synthesizes the YM2610: FM, SSG and ADPCM-A/B.

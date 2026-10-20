@@ -37,7 +37,7 @@ Frame numbers count 59.19 Hz video frames from power-on. The MVS BIOS eyecatcher
 
 ## Windowed play
 
-Keys: arrows; **Z X C V** = A B C D; **5** = coin; **1** = start (P1); **2** = start (P2); **3** = select; **9** = service; **F2** = test switch; **Esc** = quit. There is no sound yet.
+Keys: arrows; **Z X C V** = A B C D; **5** = coin; **1** = start (P1); **2** = start (P2); **3** = select; **9** = service; **F2** = test switch; **Esc** = quit. `--mute` turns the sound off; `--wav FILE` writes it to a file, also headless.
 
 On an MVS you insert a coin before Start does anything.
 

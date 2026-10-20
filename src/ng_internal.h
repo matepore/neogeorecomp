@@ -73,7 +73,8 @@ void    audio_sync(void);                /* run the Z80 up to ng_cycles */
 void    audio_command(uint8_t cmd);      /* 68k write to $320000 */
 uint8_t audio_reply(void);               /* 68k read of $320000 */
 void    audio_select_bios_rom(int bios); /* SM1 vs cart M1 */
-size_t  audio_take_samples(int16_t *out, size_t max_frames);  /* stereo */
+size_t  audio_take_samples(int16_t *out, size_t max_frames);  /* stereo, NG_AUDIO_RATE */
+#define NG_AUDIO_RATE 55555                  /* the YM2610's: 8 MHz / 144 */
 void    audio_shutdown(void);
 
 /* ---- execution engine (exec.c) ---- */
@@ -92,12 +93,15 @@ void platform_early_init(void);       /* crash reporting; call first */
 int  platform_init(const char *title, int scale, int headless, const char *record_path);
 bool platform_frame(const uint32_t *fb, ng_input_t *in);  /* false = quit */
 void platform_audio(const int16_t *samples, size_t frames);
+int  platform_wav(const char *path);      /* also write the audio to a WAV file */
+void platform_mute(void);                 /* no sound from the window */
 void platform_shutdown(void);
 int  write_png(const char *path, const uint32_t *argb, int w, int h);
 
 /* ---- window (window_sdl.c, or stubs in platform.c without SDL2) ---- */
 int  window_open(const char *title, int scale);
 bool window_frame(const uint32_t *fb, ng_input_t *in);   /* false = quit */
+void window_audio(const int16_t *samples, size_t frames);
 void window_close(void);
 
 #endif

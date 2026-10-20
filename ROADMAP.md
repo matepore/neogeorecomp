@@ -2,7 +2,7 @@
 
 ## Next
 
-- **Sound.** The Z80 already runs the real driver. What's missing is YM2610 synthesis (FM, SSG, ADPCM-A/B from the V ROMs) and an audio path: SDL output, plus the audio track in `--record`. The plan is to wrap [ymfm](https://github.com/aaronsgiles/ymfm) (BSD-3) behind `audio.c`'s current register interface.
+- **Sound in `--record`.** Sound plays in the window and `--wav` writes it; `--record` still makes silent videos.
 - **Load ROMs from zip files**, so users can point at `mslug.zip` + `neogeo.zip` instead of unzipping.
 
 ## Later

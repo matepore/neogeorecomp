@@ -18,7 +18,8 @@ A game repo contributes a ROM layout (`ng_game_t`) and nothing else. It has no a
 | `src/lspc.c` | the LSPC's CPU side: VRAM ports, raster counter, auto-animation, timer IRQ, IRQ acknowledge |
 | `src/video.c` | palette RAM and the per-scanline renderer (sprites, fix layer) |
 | `src/io.c` | controllers, status ports, DIPs, the system latch, the uPD4990A calendar |
-| `src/audio.c` | the Z80 (memory, banking, ports, NMI), the 68k-Z80 latches, YM2610 timers |
+| `src/audio.c` | the Z80 (memory, banking, ports, NMI), the 68k-Z80 latches, YM2610 timers, and the sample buffer |
+| `src/ym2610.cpp` | YM2610 synthesis through ymfm: FM, SSG, ADPCM-A/B from the V ROMs |
 | `src/platform.c`, `src/window_sdl.c` | headless output, `--record`, PNG writer, crash reports; the optional SDL2 window |
 | `src/romload.c` | reading a set's files into regions; shared with the recompiler so both see the same program |
 | `tools/m68krecomp/` | decoder, discovery, C emitter |
@@ -74,4 +75,4 @@ Power-on selects the BIOS vectors, asserts IRQ3 and starts the 68000 at the syst
 
 ## What the runtime does not do yet
 
-Sound synthesis (the YM2610 only models timers and status), memory cards, AES system ROMs, PAL timing, and games with protection or encrypted ROMs. ROADMAP.md tracks them.
+Sound in `--record`, memory cards, AES system ROMs, PAL timing, and games with protection or encrypted ROMs. ROADMAP.md tracks them.

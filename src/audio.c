@@ -15,7 +15,9 @@
  * sound latches, and at the end of each frame.
  *
  * The YM2610 here models the timers, status and IRQ line that drivers
- * sync to. Tone generation is not implemented yet (ROADMAP.md).
+ * sync to; ym2610.cpp makes the sound. Samples are generated up to the
+ * Z80's clock before every register write, so each write lands on the
+ * right sample, and the frame loop takes them at the end of each frame.
  */
 #include "ng_internal.h"
 #include <neogeorecomp/cpu.h>
@@ -32,6 +34,34 @@ static uint32_t s_bank[4];          /* byte offsets for $F000, $E000, $C000, $80
 static uint8_t s_cmd, s_reply;
 static int s_nmi_enabled, s_nmi_pending, s_nmi_line;
 static int64_t s_z80_clock;         /* Z80 clocks executed, tracks ng_cycles / 3 */
+
+/* Synthesis (ym2610.cpp): one stereo sample per 72 Z80 clocks (8 MHz / 144). */
+void    ym2610_init(const uint8_t *const *vroms, const size_t *sizes, int n);
+void    ym2610_reset(void);
+void    ym2610_write(int port, uint8_t v);
+uint8_t ym2610_read(int port);
+void    ym2610_generate(int16_t *out, size_t n);
+
+#define SAMPLE_CLOCKS 72
+#define RING 16384                  /* stereo samples, about 0.3 s */
+static int16_t s_ring[RING * 2];
+static size_t s_ring_head, s_ring_count;
+static int64_t s_samples_done;      /* samples generated since power-on */
+
+static void generate_to_now(void) {
+    int64_t target = s_z80_clock / SAMPLE_CLOCKS;
+    while (s_samples_done < target) {
+        size_t n = (size_t)(target - s_samples_done), tail = (s_ring_head + s_ring_count) % RING;
+        if (n > RING - tail) n = RING - tail;
+        ym2610_generate(s_ring + tail * 2, n);
+        s_samples_done += (int64_t)n;
+        s_ring_count += n;
+        if (s_ring_count > RING) {   /* nobody is taking them: keep the newest */
+            s_ring_head = (s_ring_head + s_ring_count - RING) % RING;
+            s_ring_count = RING;
+        }
+    }
+}
 
 /* ---- YM2610: timers and status only ---- */
 static struct {
@@ -80,7 +110,7 @@ static uint8_t ym_read(int port) {
     switch (port) {
     case 0: return s_ym.status;           /* busy flag always clear */
     case 1: return s_ym.regs[0][s_ym.addr[0]];
-    case 2: return 0;                     /* ADPCM end flags */
+    case 2: generate_to_now(); return ym2610_read(2);   /* ADPCM end flags */
     default: return 0;
     }
 }
@@ -148,6 +178,8 @@ static void z_out(z80 *z, uint8_t port, uint8_t v) {
     case 0x04: case 0x05: case 0x06: case 0x07:
         ym_update_timers();
         ym_write(port & 3, v);
+        generate_to_now();
+        ym2610_write(port & 3, v);
         break;
     case 0x08: s_nmi_enabled = !(port & 0x10); update_nmi(); break;
     case 0x0C: s_reply = v; break;
@@ -171,11 +203,13 @@ void audio_reset(void) {
     s_ym.ta_deadline = s_ym.tb_deadline = INT64_MAX;
     s_z80_clock = ng_cycles / 3;
     s_z.cyc = 0;
+    ym2610_reset();
+    s_samples_done = s_z80_clock / SAMPLE_CLOCKS;
 }
 
 int audio_init(const uint8_t *m1, size_t m1_size, const uint8_t *sm1,
                const uint8_t *const *vroms, const size_t *vrom_sizes, int nvrom) {
-    (void)vroms; (void)vrom_sizes; (void)nvrom;
+    ym2610_init(vroms, vrom_sizes, nvrom);
     s_m1 = m1; s_m1_size = m1_size; s_sm1 = sm1;
     s_cmd = 0; s_reply = 0;
     audio_reset();
@@ -217,8 +251,15 @@ void audio_select_bios_rom(int bios) {
 }
 
 size_t audio_take_samples(int16_t *out, size_t max_frames) {
-    memset(out, 0, max_frames * 2 * sizeof(int16_t));
-    return max_frames;
+    generate_to_now();
+    size_t n = s_ring_count < max_frames ? s_ring_count : max_frames;
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2] = s_ring[s_ring_head * 2];
+        out[i * 2 + 1] = s_ring[s_ring_head * 2 + 1];
+        s_ring_head = (s_ring_head + 1) % RING;
+    }
+    s_ring_count -= n;
+    return n;
 }
 
 void audio_shutdown(void) {}

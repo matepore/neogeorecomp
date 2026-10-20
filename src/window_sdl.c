@@ -1,5 +1,5 @@
 /*
- * window_sdl.c — the SDL2 window: presentation, keyboard, frame pacing.
+ * window_sdl.c — the SDL2 window: presentation, sound, keyboard, frame pacing.
  * Only built when SDL2 is found; see platform.c for the headless stubs.
  *
  * Keys: arrows, Z/X/C/V = A/B/C/D, 1/2 = start P1/P2, 3 = select,
@@ -14,6 +14,7 @@ static SDL_Window *s_win;
 static SDL_Renderer *s_ren;
 static SDL_Texture *s_tex;
 static uint64_t s_next_tick;
+static SDL_AudioDeviceID s_audio;
 
 int window_open(const char *title, int scale) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -27,7 +28,31 @@ int window_open(const char *title, int scale) {
     s_tex = SDL_CreateTexture(s_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
                               NG_SCREEN_W, NG_SCREEN_H);
     s_next_tick = SDL_GetPerformanceCounter();
+    /* Sound at the YM2610's own rate; SDL converts it for the device. A
+     * missing audio device leaves the game silent, not stopped. */
+    SDL_AudioSpec want = {0};
+    want.freq = NG_AUDIO_RATE; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 1024;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0)
+        s_audio = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
+    if (!s_audio) fprintf(stderr, "warning: no sound: %s\n", SDL_GetError());
     return 0;
+}
+
+/* The frame loop and the sound card both run at the board's rates, so the
+ * queue stays level; it is kept between about 30 and 120 ms, dropping a
+ * frame's samples when it runs long (after a stall) and padding with
+ * silence when it runs dry. */
+void window_audio(const int16_t *samples, size_t frames) {
+    if (!s_audio) return;
+    const Uint32 bytes_per_ms = NG_AUDIO_RATE * 4 / 1000;
+    Uint32 queued = SDL_GetQueuedAudioSize(s_audio);
+    if (queued > 120 * bytes_per_ms) return;
+    if (queued < 30 * bytes_per_ms) {
+        static const int16_t silence[2 * 2048];   /* 37 ms */
+        SDL_QueueAudio(s_audio, silence, (Uint32)(30 * bytes_per_ms - queued) & ~3u);
+    }
+    SDL_QueueAudio(s_audio, samples, (Uint32)(frames * 4));
+    SDL_PauseAudioDevice(s_audio, 0);
 }
 
 static void read_keys(ng_input_t *in) {
@@ -72,6 +97,7 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
 }
 
 void window_close(void) {
+    if (s_audio) SDL_CloseAudioDevice(s_audio);
     if (s_tex) SDL_DestroyTexture(s_tex);
     if (s_ren) SDL_DestroyRenderer(s_ren);
     if (s_win) SDL_DestroyWindow(s_win);

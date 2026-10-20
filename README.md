@@ -13,7 +13,7 @@ Games live in their own repos and pull this one in as a submodule:
 
 ## Status
 
-**v0.2.0-dev, alpha.** Metal Slug and Neo Drift Out are playable, with no sound yet.
+**v0.2.0-dev, alpha.** Metal Slug and Neo Drift Out are playable.
 
 ![Metal Slug gameplay, rendered by the recompiled C](docs/screenshots/mslug-tank.png)
 
@@ -27,7 +27,7 @@ Games live in their own repos and pull this one in as a submodule:
 | Boot | Real MVS system ROM (`sp-s2.sp1`): memory test, eyecatcher, coins and credits, game start. There is no BIOS HLE. |
 | Video | Per-scanline sprites (sticky chains, L0-ROM vertical shrink, horizontal shrink, 96-per-line limit, auto-animation), fix layer, both palette banks, raster timer IRQ. |
 | I/O | Controllers, coin/service, DIPs, system latch, uPD4990A calendar, backup RAM lock. |
-| Audio | The Z80 runs the real sound driver (NMI command latch, reply latch, ROM banking, YM2610 timers). **No sound output yet:** FM/SSG/ADPCM synthesis is next. |
+| Audio | The Z80 runs the real sound driver (NMI command latch, reply latch, ROM banking, YM2610 timers). The YM2610's FM, SSG and ADPCM-A/B are synthesized by [ymfm](https://github.com/aaronsgiles/ymfm), clocked by the Z80, and played through SDL2 or written with `--wav`. |
 | Platforms | Windows (MSVC 2022) and Linux (gcc), both verified locally; the CI workflow builds both and runs conformance. The SDL2 window is optional; headless builds need nothing extra. |
 
 ### Compatibility
