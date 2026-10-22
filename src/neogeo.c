@@ -24,8 +24,9 @@ static uint32_t s_fb[NG_SCREEN_W * NG_SCREEN_H];
 
 #define MAX_SHOTS 64
 typedef struct {
-    const char *rom_path, *bios_path, *record, *input, *dump_misses, *bios_name, *wav;
-    int headless, interp, verify, scale, mute;
+const char *rom_path, *bios_path, *record, *input, *dump_misses, *bios_name, *wav;
+int headless, interp, verify, scale, mute;
+int capture_controller;
     long frames;
     struct { long frame; const char *path; } shots[MAX_SHOTS];
     int nshots;
@@ -60,6 +61,7 @@ static int parse_args(int argc, char **argv, options_t *o) {
         else if (!strcmp(a, "--bios-path") && next) { o->bios_path = next; i++; }
         else if (!strcmp(a, "--bios") && next) { o->bios_name = next; i++; }
         else if (!strcmp(a, "--headless")) o->headless = 1;
+        else if (!strcmp(a, "--capture-controller")) o->capture_controller = 1;
         else if (!strcmp(a, "--record") && next) { o->record = next; i++; }
         else if (!strcmp(a, "--frames") && next) { o->frames = atol(next); i++; }
         else if (!strcmp(a, "--input") && next) { o->input = next; i++; }
@@ -202,6 +204,17 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
     options_t o;
     platform_early_init();
     if (parse_args(argc, argv, &o)) return 2;
+
+    if (o.capture_controller) {
+        char binding[64];
+        int rc = window_capture_controller(binding, sizeof binding);
+
+        if (rc == 0)
+            printf("%s\n", binding);
+
+        return rc;
+    }
+
     if (o.input && load_script(o.input)) return 1;
 
     size_t sz, bios_sz, sfix_sz, sm1_sz, lo_sz, srom_sz, m1_sz;

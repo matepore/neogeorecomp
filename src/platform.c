@@ -73,6 +73,12 @@ int  window_open(const char *title, int scale) {
     fprintf(stderr, "error: built without SDL2; run with --headless\n");
     return -1;
 }
+int window_capture_controller(char *binding, size_t binding_size) {
+    (void)binding;
+    (void)binding_size;
+    fprintf(stderr, "error: controller capture requires SDL2\n");
+    return 1;
+}
 bool window_frame(const uint32_t *fb, ng_input_t *in) { (void)fb; (void)in; return true; }
 void window_audio(const int16_t *samples, size_t frames) { (void)samples; (void)frames; }
 void window_close(void) {}

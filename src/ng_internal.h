@@ -103,5 +103,6 @@ int  window_open(const char *title, int scale);
 bool window_frame(const uint32_t *fb, ng_input_t *in);   /* false = quit */
 void window_audio(const int16_t *samples, size_t frames);
 void window_close(void);
+int window_capture_controller(char *binding, size_t binding_size);
 
 #endif
