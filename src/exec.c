@@ -308,8 +308,11 @@ static uint32_t replay_read(uint32_t a, int size) {
     if (!s_rp_bad) {
         s_rp_bad = 1;
         if (s_rp_i < s_rp_n)
-            snprintf(s_rp_msg, sizeof(s_rp_msg), "interpreter read%d $%06X where native did %s%d $%06X",
-                     size * 8, a, s_rp[s_rp_i].write ? "write" : "read", s_rp[s_rp_i].size * 8, s_rp[s_rp_i].addr);
+            snprintf(s_rp_msg, sizeof(s_rp_msg),
+                "interpreter PC=$%06X read%d $%06X where native did %s%d $%06X",
+                m68k_get_reg(NULL, M68K_REG_PC), size * 8, a,
+                s_rp[s_rp_i].write ? "write" : "read",
+                s_rp[s_rp_i].size * 8, s_rp[s_rp_i].addr);
         else
             snprintf(s_rp_msg, sizeof(s_rp_msg), "interpreter read%d $%06X after native's last access", size * 8, a);
     }

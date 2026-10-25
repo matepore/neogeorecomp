@@ -38,7 +38,9 @@ static inline uint16_t ng_r16(uint32_t a) {
     return ng_r16_slow(a);
 }
 static inline uint32_t ng_r32(uint32_t a) {
-    return ((uint32_t)ng_r16(a) << 16) | ng_r16(a + 2);
+    uint16_t hi = ng_r16(a);
+    uint16_t lo = ng_r16(a + 2);
+    return ((uint32_t)hi << 16) | lo;
 }
 static inline void ng_w8(uint32_t a, uint8_t v) {
     a &= 0xFFFFFF;
