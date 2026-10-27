@@ -21,12 +21,35 @@ static SDL_Renderer *s_ren;
 static SDL_Texture *s_tex;
 static uint64_t s_next_tick;
 static SDL_AudioDeviceID s_audio;
+static bool s_menu_open = false;
+static int s_menu_selection = 0;
+
+typedef enum {
+    MENU_MAIN = 0,
+    MENU_CONTROLS,
+    MENU_GRAPHICS,
+    MENU_KEYBOARD_P1,
+    MENU_KEYBOARD_P2,
+    MENU_KEYBOARD_SYSTEM
+} menu_screen_t;
+
+static menu_screen_t s_menu_screen = MENU_MAIN;
+static bool s_menu_wait_release = false;
+static bool s_menu_capturing = false;
+static int s_capture_action = -1;
+
+static SDL_Scancode s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
+static int s_conflict_action = -1;
+
+static char s_menu_status[64] = "";
+
 
 /* ponytail: a fixed layout; remapping belongs to the frontend (ROADMAP.md) */
 
 typedef struct {
     SDL_Scancode p1[8], p2[8];
     SDL_Scancode start1, start2, select1, coin1, coin2, service, test;
+    SDL_Scancode overlay_toggle, fullscreen_toggle;
 } bindings_t;
 
 typedef struct {
@@ -65,13 +88,13 @@ static pad_binding_t pad_system[PAD_SYSTEM_COUNT];
 static bindings_t b;
 static input_device_t devices[2];
 
-static const char *names[23] = {
+static const char *names[25] = {
     "P1_UP", "P1_DOWN", "P1_LEFT", "P1_RIGHT",
     "P1_A", "P1_B", "P1_C", "P1_D",
     "P2_UP", "P2_DOWN", "P2_LEFT", "P2_RIGHT",
     "P2_A", "P2_B", "P2_C", "P2_D",
     "START1", "START2", "SELECT", "COIN1", "COIN2",
-    "SERVICE", "TEST"
+    "SERVICE", "TEST", "OVERLAY", "FULLSCREEN"
 };
 
 static SDL_Scancode *slot(const char *n) {
@@ -90,6 +113,8 @@ static SDL_Scancode *slot(const char *n) {
     if (!strcmp(n, "COIN2")) return &b.coin2;
     if (!strcmp(n, "SERVICE")) return &b.service;
     if (!strcmp(n, "TEST")) return &b.test;
+    if (!strcmp(n, "OVERLAY")) return &b.overlay_toggle;
+    if (!strcmp(n, "FULLSCREEN")) return &b.fullscreen_toggle;
 
     return NULL;
 }
@@ -119,6 +144,8 @@ static void defaults(void) {
     b.coin2 = SDL_SCANCODE_6;
     b.service = SDL_SCANCODE_9;
     b.test = SDL_SCANCODE_F2;
+    b.overlay_toggle = SDL_SCANCODE_F1;
+    b.fullscreen_toggle = SDL_SCANCODE_F11;
 }
 
 static pad_binding_t *pad_slot(const char *name) {
@@ -531,7 +558,7 @@ static void load_bindings(void) {
     fclose(f);
 
     /* Reject duplicate assigned keys, but allow multiple unassigned actions. */
-    for (i = 0; i < 23; i++) {
+    for (i = 0; i < 25; i++) {
         if (*slot(names[i]) == SDL_SCANCODE_UNKNOWN)
             continue;
 
@@ -546,6 +573,115 @@ static void load_bindings(void) {
             }
         }
     }
+}
+
+static const char *pad_names[23] = {
+    "PAD_P1_UP", "PAD_P1_DOWN", "PAD_P1_LEFT", "PAD_P1_RIGHT",
+    "PAD_P1_A", "PAD_P1_B", "PAD_P1_C", "PAD_P1_D",
+    "PAD_P2_UP", "PAD_P2_DOWN", "PAD_P2_LEFT", "PAD_P2_RIGHT",
+    "PAD_P2_A", "PAD_P2_B", "PAD_P2_C", "PAD_P2_D",
+    "PAD_START1", "PAD_START2", "PAD_SELECT",
+    "PAD_COIN1", "PAD_COIN2", "PAD_SERVICE", "PAD_TEST"
+};
+
+static void format_pad_binding(
+    const pad_binding_t *binding,
+    char *out,
+    size_t out_size)
+{
+    switch (binding->type) {
+    case PAD_BUTTON:
+        snprintf(out, out_size, "BTN%d", binding->index);
+        break;
+
+    case PAD_HAT:
+        switch (binding->direction) {
+        case SDL_HAT_UP:
+            snprintf(out, out_size, "HAT%d_UP", binding->index);
+            break;
+        case SDL_HAT_DOWN:
+            snprintf(out, out_size, "HAT%d_DOWN", binding->index);
+            break;
+        case SDL_HAT_LEFT:
+            snprintf(out, out_size, "HAT%d_LEFT", binding->index);
+            break;
+        case SDL_HAT_RIGHT:
+            snprintf(out, out_size, "HAT%d_RIGHT", binding->index);
+            break;
+        default:
+            snprintf(out, out_size, "NONE");
+            break;
+        }
+        break;
+
+    case PAD_AXIS_NEG:
+        snprintf(out, out_size, "AXIS%d_NEG", binding->index);
+        break;
+
+    case PAD_AXIS_POS:
+        snprintf(out, out_size, "AXIS%d_POS", binding->index);
+        break;
+
+    case PAD_NONE:
+    default:
+        snprintf(out, out_size, "NONE");
+        break;
+    }
+}
+
+static int save_bindings(void)
+{
+    FILE *f;
+    int i;
+    char value[32];
+
+    f = fopen("controls.cfg", "w");
+    if (!f) {
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "ERROR AL GUARDAR");
+        return 0;
+    }
+
+    fprintf(f, "# Keyboard bindings\n");
+
+    for (i = 0; i < 25; i++) {
+        SDL_Scancode *key = slot(names[i]);
+
+        if (!key || *key == SDL_SCANCODE_UNKNOWN) {
+            snprintf(value, sizeof value, "NONE");
+        } else {
+            const char *key_name = SDL_GetScancodeName(*key);
+
+            if (!key_name || !*key_name) {
+                snprintf(value, sizeof value, "NONE");
+            } else {
+                snprintf(value, sizeof value, "%s", key_name);
+            }
+        }
+
+        fprintf(f, "%s=%s\n", names[i], value);
+    }
+
+    fprintf(f, "\n# Controller bindings\n");
+
+    for (i = 0; i < 23; i++) {
+        pad_binding_t *binding = pad_slot(pad_names[i]);
+
+        if (!binding)
+            continue;
+
+        format_pad_binding(binding, value, sizeof value);
+        fprintf(f, "%s=%s\n", pad_names[i], value);
+    }
+
+    if (fclose(f) != 0) {
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "ERROR AL GUARDAR");
+        return 0;
+    }
+
+    snprintf(s_menu_status, sizeof s_menu_status, "CONFIG GUARDADA");
+    return 1;
 }
 
 static void close_device(int player) {
@@ -966,6 +1102,729 @@ static void read_keys(ng_input_t *in) {
     (void)i;
 }
 
+static void menu_toggle_fullscreen(void) {
+    Uint32 flags;
+    bool fullscreen;
+
+    if (!s_win)
+        return;
+
+    flags = SDL_GetWindowFlags(s_win);
+    fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
+
+    if (SDL_SetWindowFullscreen(
+            s_win,
+            fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
+        fprintf(stderr,
+                "No se pudo cambiar el modo de pantalla: %s\n",
+                SDL_GetError());
+    }
+}
+
+static const char *keyboard_labels[25] = {
+    "P1 UP", "P1 DOWN", "P1 LEFT", "P1 RIGHT",
+    "P1 A", "P1 B", "P1 C", "P1 D",
+    "P2 UP", "P2 DOWN", "P2 LEFT", "P2 RIGHT",
+    "P2 A", "P2 B", "P2 C", "P2 D",
+    "START 1", "START 2", "SELECT",
+    "COIN 1", "COIN 2", "SERVICE", "TEST",
+    "ABRIR OVERLAY", "PANTALLA COMPLETA"
+};
+
+static int menu_is_keyboard_screen(void)
+{
+    return s_menu_screen == MENU_KEYBOARD_P1 ||
+           s_menu_screen == MENU_KEYBOARD_P2 ||
+           s_menu_screen == MENU_KEYBOARD_SYSTEM;
+}
+
+static int menu_keyboard_action_count(void)
+{
+    if (s_menu_screen == MENU_KEYBOARD_P1 ||
+        s_menu_screen == MENU_KEYBOARD_P2)
+        return 8;
+
+    if (s_menu_screen == MENU_KEYBOARD_SYSTEM)
+        return 9;
+
+    return 0;
+}
+
+static int menu_keyboard_action_index(void)
+{
+    if (s_menu_screen == MENU_KEYBOARD_P1)
+        return s_menu_selection;
+
+    if (s_menu_screen == MENU_KEYBOARD_P2)
+        return 8 + s_menu_selection;
+
+    if (s_menu_screen == MENU_KEYBOARD_SYSTEM)
+        return 16 + s_menu_selection;
+
+    return -1;
+}
+
+static const char *menu_key_name(int action)
+{
+    SDL_Scancode *key;
+
+    if (action < 0 || action >= 25)
+        return "NONE";
+
+    key = slot(names[action]);
+
+    if (!key || *key == SDL_SCANCODE_UNKNOWN)
+        return "NONE";
+
+    return SDL_GetScancodeName(*key);
+}
+
+static int menu_find_key_conflict(
+    SDL_Scancode scancode,
+    int except_action)
+{
+    int i;
+
+    for (i = 0; i < 25; i++) {
+        SDL_Scancode *key = slot(names[i]);
+
+        if (i != except_action &&
+            key &&
+            *key != SDL_SCANCODE_UNKNOWN &&
+            *key == scancode) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static void menu_start_capture(int action)
+{
+    if (action < 0 || action >= 25)
+        return;
+
+    s_capture_action = action;
+    s_menu_capturing = true;
+
+    s_conflict_action = -1;
+    s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
+
+    snprintf(s_menu_status, sizeof s_menu_status,
+             "PULSE UNA TECLA");
+}
+
+static void menu_cancel_capture(void)
+{
+    s_menu_capturing = false;
+    s_capture_action = -1;
+    s_conflict_action = -1;
+    s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
+
+    snprintf(s_menu_status, sizeof s_menu_status, "CANCELADO");
+}
+
+static void menu_capture_key(SDL_Scancode scancode)
+{
+    int conflict;
+    SDL_Scancode *target;
+
+    if (!s_menu_capturing || s_capture_action < 0)
+        return;
+
+    /* Escape is reserved for canceling the operation. */
+    if (scancode == SDL_SCANCODE_ESCAPE) {
+        menu_cancel_capture();
+        return;
+    }
+
+    target = slot(names[s_capture_action]);
+    if (!target) {
+        menu_cancel_capture();
+        return;
+    }
+
+    conflict = menu_find_key_conflict(scancode, s_capture_action);
+
+    if (conflict >= 0) {
+        s_menu_capturing = false;
+        s_conflict_action = conflict;
+        s_conflict_scancode = scancode;
+
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "EN USO: ENTER CAMBIA");
+        return;
+    }
+
+    *target = scancode;
+    s_menu_capturing = false;
+    s_capture_action = -1;
+
+    save_bindings();
+}
+
+static void menu_resolve_conflict(void)
+{
+    SDL_Scancode *target;
+    SDL_Scancode *other;
+
+    if (s_conflict_action < 0 ||
+        s_capture_action < 0 ||
+        s_conflict_scancode == SDL_SCANCODE_UNKNOWN) {
+        return;
+    }
+
+    target = slot(names[s_capture_action]);
+    other = slot(names[s_conflict_action]);
+
+    if (!target || !other) {
+        menu_cancel_capture();
+        return;
+    }
+
+    /*
+     * Swap the two assignments rather than creating a duplicate.
+     * This keeps both actions usable.
+     */
+    {
+        SDL_Scancode old_target = *target;
+
+        *target = s_conflict_scancode;
+        *other = old_target;
+    }
+
+    s_menu_capturing = false;
+    s_capture_action = -1;
+    s_conflict_action = -1;
+    s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
+
+    save_bindings();
+}
+
+static void menu_draw_text(int x, int y, const char *text,
+                           int scale, SDL_Color color) {
+    static const struct {
+        char c;
+        unsigned char rows[7];
+    } glyphs[] = {
+        {'A',{14,17,17,31,17,17,17}}, {'B',{30,17,17,30,17,17,30}},
+        {'C',{14,17,16,16,16,17,14}}, {'D',{30,17,17,17,17,17,30}},
+        {'E',{31,16,16,30,16,16,31}}, {'F',{31,16,16,30,16,16,16}},
+        {'G',{14,17,16,23,17,17,15}}, {'H',{17,17,17,31,17,17,17}},
+        {'I',{14,4,4,4,4,4,14}},     {'J',{7,2,2,2,18,18,12}},
+        {'K',{17,18,20,24,20,18,17}}, {'L',{16,16,16,16,16,16,31}},
+        {'M',{17,27,21,21,17,17,17}}, {'N',{17,25,21,19,17,17,17}},
+        {'O',{14,17,17,17,17,17,14}}, {'P',{30,17,17,30,16,16,16}},
+        {'Q',{14,17,17,17,21,18,13}}, {'R',{30,17,17,30,20,18,17}},
+        {'S',{15,16,16,14,1,1,30}},   {'T',{31,4,4,4,4,4,4}},
+        {'U',{17,17,17,17,17,17,14}}, {'V',{17,17,17,17,17,10,4}},
+        {'W',{17,17,17,21,21,21,10}}, {'X',{17,17,10,4,10,17,17}},
+        {'Y',{17,17,10,4,4,4,4}},     {'Z',{31,1,2,4,8,16,31}},
+        {'0',{14,17,19,21,25,17,14}}, {'1',{4,12,4,4,4,4,14}},
+        {'2',{14,17,1,2,4,8,31}},     {'3',{30,1,1,14,1,1,30}},
+        {'4',{2,6,10,18,31,2,2}},     {'5',{31,16,16,30,1,1,30}},
+        {'6',{14,16,16,30,17,17,14}}, {'7',{31,1,2,4,8,8,8}},
+        {'8',{14,17,17,14,17,17,14}}, {'9',{14,17,17,15,1,1,14}},
+        {'-',{0,0,0,31,0,0,0}}, {':',{0,4,4,0,4,4,0}},
+        {' ',{0,0,0,0,0,0,0}}
+    };
+    int cursor = x;
+
+    SDL_SetRenderDrawColor(s_ren, color.r, color.g, color.b, color.a);
+
+    while (*text) {
+        char ch = (char)toupper((unsigned char)*text++);
+        size_t i;
+        const unsigned char *rows = NULL;
+
+        for (i = 0; i < sizeof glyphs / sizeof glyphs[0]; i++) {
+            if (glyphs[i].c == ch) {
+                rows = glyphs[i].rows;
+                break;
+            }
+        }
+
+        if (rows) {
+            int row, col;
+            for (row = 0; row < 7; row++) {
+                for (col = 0; col < 5; col++) {
+                    if (rows[row] & (1u << (4 - col))) {
+                        SDL_Rect pixel = {
+                            cursor + col * scale,
+                            y + row * scale,
+                            scale, scale
+                        };
+                        SDL_RenderFillRect(s_ren, &pixel);
+                    }
+                }
+            }
+        }
+
+        cursor += 6 * scale;
+    }
+}
+
+
+static int menu_item_count(void)
+{
+    switch (s_menu_screen) {
+    case MENU_MAIN:
+        return 3;
+
+    case MENU_CONTROLS:
+        return 4;
+
+    case MENU_GRAPHICS:
+        return 2;
+
+    case MENU_KEYBOARD_P1:
+    case MENU_KEYBOARD_P2:
+        return 9; /* 8 actions + Back */
+
+    case MENU_KEYBOARD_SYSTEM:
+        return 10; /* 9 acciones + Volver */
+
+    default:
+        return 0;
+    }
+}
+
+static int menu_first_item_y(int panel_y)
+{
+    if (menu_is_keyboard_screen())
+        return panel_y + 28;
+
+    if (s_menu_screen == MENU_MAIN)
+        return panel_y + 42;
+
+    if (s_menu_screen == MENU_CONTROLS)
+        return panel_y + 42;
+
+    return panel_y + 48;
+}
+
+static void menu_back(void)
+{
+    if (s_menu_capturing || s_conflict_action >= 0) {
+        menu_cancel_capture();
+        return;
+    }
+
+    if (s_menu_screen == MENU_KEYBOARD_P1 ||
+        s_menu_screen == MENU_KEYBOARD_P2 ||
+        s_menu_screen == MENU_KEYBOARD_SYSTEM) {
+        s_menu_screen = MENU_CONTROLS;
+        s_menu_selection = 0;
+    } else if (s_menu_screen != MENU_MAIN) {
+        s_menu_screen = MENU_MAIN;
+        s_menu_selection = 0;
+    } else {
+        s_menu_open = false;
+    }
+
+    s_menu_status[0] = '\0';
+}
+
+static void menu_activate(void)
+{
+    if (s_menu_capturing)
+        return;
+
+    if (s_conflict_action >= 0) {
+        menu_resolve_conflict();
+        return;
+    }
+
+    switch (s_menu_screen) {
+    case MENU_MAIN:
+        if (s_menu_selection == 0) {
+            s_menu_screen = MENU_CONTROLS;
+            s_menu_selection = 0;
+        } else if (s_menu_selection == 1) {
+            s_menu_screen = MENU_GRAPHICS;
+            s_menu_selection = 0;
+        } else {
+            s_menu_open = false;
+        }
+        break;
+
+    case MENU_CONTROLS:
+        if (s_menu_selection == 0)
+            s_menu_screen = MENU_KEYBOARD_P1;
+        else if (s_menu_selection == 1)
+            s_menu_screen = MENU_KEYBOARD_P2;
+        else if (s_menu_selection == 2)
+            s_menu_screen = MENU_KEYBOARD_SYSTEM;
+        else {
+            menu_back();
+            return;
+        }
+
+        s_menu_selection = 0;
+        s_menu_status[0] = '\0';
+        break;
+
+    case MENU_GRAPHICS:
+        if (s_menu_selection == 0) {
+            menu_toggle_fullscreen();
+        } else {
+            menu_back();
+        }
+        break;
+
+    case MENU_KEYBOARD_P1:
+    case MENU_KEYBOARD_P2:
+    case MENU_KEYBOARD_SYSTEM:
+        if (s_menu_selection == menu_keyboard_action_count()) {
+            menu_back();
+            return;
+        }
+
+        menu_start_capture(menu_keyboard_action_index());
+        break;
+    }
+
+    if (!s_menu_capturing && s_conflict_action < 0)
+        s_menu_status[0] = '\0';
+}
+
+static void menu_move(int direction) {
+    int count = menu_item_count();
+
+    if (count <= 0)
+        return;
+
+    s_menu_selection += direction;
+
+    if (s_menu_selection < 0)
+        s_menu_selection = count - 1;
+    else if (s_menu_selection >= count)
+        s_menu_selection = 0;
+}
+
+static void menu_draw(void)
+{
+    int keyboard_screen = menu_is_keyboard_screen();
+    int panel_w = keyboard_screen ? 240 : 200;
+    int panel_h = keyboard_screen ? 210 : 140;
+
+    SDL_Rect panel = {
+        NG_SCREEN_W / 2 - panel_w / 2,
+        NG_SCREEN_H / 2 - panel_h / 2,
+        panel_w, panel_h
+    };
+
+    SDL_Color white = { 240, 240, 240, 255 };
+    SDL_Color cyan = { 90, 220, 255, 255 };
+    SDL_Color muted = { 170, 180, 195, 255 };
+
+    const char *title = "";
+    const char *items[9] = { "", "", "", "", "", "", "", "", "" };
+
+    int count;
+    int first_y;
+    int row_step;
+    int i;
+
+    SDL_SetRenderDrawBlendMode(s_ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 165);
+    SDL_RenderFillRect(s_ren, NULL);
+
+    SDL_SetRenderDrawColor(s_ren, 18, 24, 44, 245);
+    SDL_RenderFillRect(s_ren, &panel);
+
+    SDL_SetRenderDrawColor(s_ren, 70, 170, 220, 255);
+    SDL_RenderDrawRect(s_ren, &panel);
+
+    switch (s_menu_screen) {
+    case MENU_MAIN:
+        title = "MAGICAL DROP III";
+        items[0] = "CONTROLES";
+        items[1] = "GRAFICOS";
+        items[2] = "VOLVER AL JUEGO";
+        break;
+
+    case MENU_CONTROLS:
+        title = "CONTROLES";
+        items[0] = "TECLADO P1";
+        items[1] = "TECLADO P2";
+        items[2] = "TECLAS SISTEMA";
+        items[3] = "VOLVER";
+        break;
+
+    case MENU_GRAPHICS:
+        title = "GRAFICOS";
+        items[0] = "CAMBIAR PANTALLA";
+        items[1] = "VOLVER";
+        break;
+
+    case MENU_KEYBOARD_P1:
+        title = "TECLADO P1";
+        break;
+
+    case MENU_KEYBOARD_P2:
+        title = "TECLADO P2";
+        break;
+
+    case MENU_KEYBOARD_SYSTEM:
+        title = "TECLAS SISTEMA";
+        break;
+
+    default:
+        return;
+    }
+
+    menu_draw_text(panel.x + 12, panel.y + 8,
+                   title, 2, white);
+
+    count = menu_item_count();
+    first_y = menu_first_item_y(panel.y);
+    row_step = keyboard_screen ? 17 : 22;
+
+    for (i = 0; i < count; i++) {
+        char action_text[64];
+        const char *label;
+        SDL_Rect option;
+        SDL_Color text_color;
+
+        if (keyboard_screen) {
+            int action_count = menu_keyboard_action_count();
+
+            if (i < action_count) {
+                int action = menu_keyboard_action_index();
+
+                if (s_menu_screen == MENU_KEYBOARD_P1)
+                    action = i;
+                else if (s_menu_screen == MENU_KEYBOARD_P2)
+                    action = 8 + i;
+                else
+                    action = 16 + i;
+
+                snprintf(action_text, sizeof action_text,
+                         "%s: %s",
+                         keyboard_labels[action],
+                         menu_key_name(action));
+                label = action_text;
+            } else {
+                label = "VOLVER";
+            }
+        } else {
+            label = items[i];
+        }
+
+        option.x = panel.x + 8;
+        option.y = first_y + i * row_step;
+        option.w = panel.w - 16;
+        option.h = keyboard_screen ? 15 : 18;
+
+        text_color = s_menu_selection == i ? white : muted;
+
+        if (s_menu_selection == i) {
+            SDL_Rect marker = {
+                option.x + 3, option.y + 5, 4, 4
+            };
+
+            SDL_SetRenderDrawColor(s_ren, 40, 100, 145, 255);
+            SDL_RenderFillRect(s_ren, &option);
+
+            SDL_SetRenderDrawColor(s_ren, cyan.r, cyan.g,
+                                   cyan.b, cyan.a);
+            SDL_RenderFillRect(s_ren, &marker);
+        }
+
+        menu_draw_text(option.x + 12, option.y + 4,
+                       label, 1, text_color);
+    }
+
+    if (s_menu_status[0]) {
+        menu_draw_text(panel.x + 10,
+                       panel.y + panel.h - 12,
+                       s_menu_status, 1, cyan);
+    }
+}
+
+static bool menu_run(const uint32_t *fb) {
+    SDL_Event e;
+
+    if (fb)
+        SDL_UpdateTexture(s_tex, NULL, fb, NG_SCREEN_W * 4);
+
+    while (s_menu_open) {
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT)
+                return false;
+
+            handle_device_events(&e);
+
+            if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
+                SDL_Scancode sc = e.key.keysym.scancode;
+
+                if (s_menu_capturing) {
+                    menu_capture_key(e.key.keysym.scancode);
+                    continue;
+                }
+
+                if (s_conflict_action >= 0) {
+                    if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                        menu_cancel_capture();
+                    } else if (e.key.keysym.scancode == SDL_SCANCODE_RETURN ||
+                            e.key.keysym.scancode == SDL_SCANCODE_SPACE) {
+                        menu_resolve_conflict();
+                    }
+                    continue;
+                }
+
+                if (sc == b.fullscreen_toggle ||
+                    (sc == SDL_SCANCODE_RETURN &&
+                    (e.key.keysym.mod & KMOD_ALT))) {
+                    menu_toggle_fullscreen();
+                    continue;
+                }
+
+                if (sc == b.overlay_toggle) {
+                    s_menu_open = false;
+                    break;
+                }
+
+                if (sc == SDL_SCANCODE_ESCAPE) {
+                    menu_back();
+                    break;
+                }
+
+                if (sc == SDL_SCANCODE_UP) {
+                    menu_move(-1);
+                } else if (sc == SDL_SCANCODE_DOWN) {
+                    menu_move(1);
+                } else if (sc == SDL_SCANCODE_RETURN ||
+                           sc == SDL_SCANCODE_SPACE) {
+                    menu_activate();
+                }
+            }
+
+            if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                SDL_GameControllerButton button =
+                    (SDL_GameControllerButton)e.cbutton.button;
+
+                if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+                    menu_move(-1);
+                } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+                    menu_move(1);
+                } else if (button == SDL_CONTROLLER_BUTTON_A ||
+                           button == SDL_CONTROLLER_BUTTON_START) {
+                    menu_activate();
+                } else if (button == SDL_CONTROLLER_BUTTON_B) {
+                    menu_back();
+                }
+            }
+
+            if (e.type == SDL_JOYHATMOTION) {
+                int player = find_device(e.jhat.which);
+
+                /* Controller-mapped devices are handled above. */
+                if (player >= 0 && !devices[player].controller) {
+                    if (e.jhat.value & SDL_HAT_UP)
+                        menu_move(-1);
+                    else if (e.jhat.value & SDL_HAT_DOWN)
+                        menu_move(1);
+                }
+            }
+
+            if (e.type == SDL_JOYBUTTONDOWN) {
+                int player = find_device(e.jbutton.which);
+
+                /* Avoid processing controller buttons twice. */
+                if (player >= 0 && !devices[player].controller) {
+                    if (e.jbutton.button == 0)
+                        menu_activate();
+                    else if (e.jbutton.button == 1)
+                        menu_back();
+                }
+            }
+
+            if (e.type == SDL_MOUSEMOTION ||
+                e.type == SDL_MOUSEBUTTONDOWN) {
+                int mx = e.type == SDL_MOUSEMOTION
+                    ? e.motion.x : e.button.x;
+                int my = e.type == SDL_MOUSEMOTION
+                    ? e.motion.y : e.button.y;
+                int panel_h = menu_is_keyboard_screen() ? 210 : 140;
+                int panel_y = NG_SCREEN_H / 2 - panel_h / 2;
+                int first_y = menu_first_item_y(panel_y);
+                int row_step = menu_is_keyboard_screen() ? 17 : 22;
+                int count = menu_item_count();
+                int panel_w = menu_is_keyboard_screen() ? 240 : 200;
+                int i;
+
+                if (mx >= NG_SCREEN_W / 2 - (panel_w / 2 - 8) &&
+                    mx <= NG_SCREEN_W / 2 + (panel_w / 2 - 8)) {
+                    for (i = 0; i < count; i++) {
+                        int top = first_y + i * row_step;
+
+                        if (my >= top && my < top + 18) {
+                            s_menu_selection = i;
+
+                            if (e.type == SDL_MOUSEBUTTONDOWN &&
+                                e.button.button == SDL_BUTTON_LEFT) {
+                                menu_activate();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!s_menu_open)
+            break;
+
+        SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
+        SDL_RenderClear(s_ren);
+
+        if (s_tex)
+            SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+
+        menu_draw();
+        SDL_RenderPresent(s_ren);
+        SDL_Delay(16);
+    }
+
+    s_menu_wait_release = true;
+    return true;
+}
+
+static bool menu_any_controller_button_down(void) {
+    int i;
+
+    SDL_PumpEvents();
+
+    for (i = 0; i < 2; i++) {
+        if (devices[i].controller) {
+            int b;
+
+            for (b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
+                if (SDL_GameControllerGetButton(
+                        devices[i].controller,
+                        (SDL_GameControllerButton)b)) {
+                    return true;
+                }
+            }
+        } else if (devices[i].joystick) {
+            int b;
+            int count = SDL_JoystickNumButtons(
+                devices[i].joystick);
+
+            for (b = 0; b < count; b++) {
+                if (SDL_JoystickGetButton(
+                        devices[i].joystick, b)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
 bool window_frame(const uint32_t *fb, ng_input_t *in) {
     SDL_Event e;
 
@@ -973,20 +1832,52 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
         if (e.type == SDL_QUIT)
             return false;
 
-        if (e.type == SDL_KEYDOWN &&
-            e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
-            return false;
+        if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
+            SDL_Scancode sc = e.key.keysym.scancode;
+
+            if (sc == b.overlay_toggle) {
+                s_menu_open = true;
+                s_menu_screen = MENU_MAIN;
+                s_menu_selection = 0;
+                break;
+            }
+
+            if (sc == SDL_SCANCODE_ESCAPE)
+                return false;
+
+            if (sc == b.fullscreen_toggle ||
+                (sc == SDL_SCANCODE_RETURN &&
+                (e.key.keysym.mod & KMOD_ALT))) {
+                menu_toggle_fullscreen();
+            }
+        }
 
         handle_device_events(&e);
     }
+
+    if (s_menu_open)
+        return menu_run(fb);
 
     read_keys(in);
     read_controller(0, in);
     read_controller(1, in);
 
+    if (s_menu_wait_release) {
+        bool button_down = menu_any_controller_button_down();
+
+        memset(in, 0, sizeof(*in));
+
+        if (!button_down) {
+            s_menu_wait_release = false;
+        }
+    }
+
     if (fb) {
         SDL_UpdateTexture(s_tex, NULL, fb, NG_SCREEN_W * 4);
+
+        SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
         SDL_RenderClear(s_ren);
+
         SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
         SDL_RenderPresent(s_ren);
     }
