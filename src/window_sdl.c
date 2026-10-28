@@ -30,7 +30,9 @@ typedef enum {
     MENU_GRAPHICS,
     MENU_KEYBOARD_P1,
     MENU_KEYBOARD_P2,
-    MENU_KEYBOARD_SYSTEM
+    MENU_KEYBOARD_SYSTEM,
+    MENU_PAD_P1,
+    MENU_PAD_P2
 } menu_screen_t;
 
 static menu_screen_t s_menu_screen = MENU_MAIN;
@@ -85,6 +87,12 @@ enum {
 
 static pad_binding_t pad_players[2][8];
 static pad_binding_t pad_system[PAD_SYSTEM_COUNT];
+static bool s_pad_capturing = false;
+static bool s_pad_capture_wait_neutral = true;
+static int s_pad_capture_player = -1;
+static int s_pad_capture_action = -1;
+static int s_pad_conflict_action = -1;
+static pad_binding_t s_pad_conflict_binding;
 static bindings_t b;
 static input_device_t devices[2];
 
@@ -647,8 +655,7 @@ static int save_bindings(void)
     for (i = 0; i < 25; i++) {
         SDL_Scancode *key = slot(names[i]);
 
-        if (!key || *key == SDL_SCANCODE_UNKNOWN) {
-            snprintf(value, sizeof value, "NONE");
+        if (!key || *key == SDL_SCANCODE_UNKNOWN) {            snprintf(value, sizeof value, "NONE");
         } else {
             const char *key_name = SDL_GetScancodeName(*key);
 
@@ -1297,7 +1304,254 @@ static void menu_resolve_conflict(void)
     s_capture_action = -1;
     s_conflict_action = -1;
     s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
+    save_bindings();
+}
 
+static int menu_is_pad_screen(void)
+{
+    return s_menu_screen == MENU_PAD_P1 ||
+           s_menu_screen == MENU_PAD_P2;
+}
+
+static int menu_pad_player(void)
+{
+    if (s_menu_screen == MENU_PAD_P1) return 0;
+    if (s_menu_screen == MENU_PAD_P2) return 1;
+    return -1;
+}
+
+static const char *pad_action_labels[8] = {
+    "ARRIBA", "ABAJO", "IZQUIERDA", "DERECHA",
+    "BOTON A", "BOTON B", "BOTON C", "BOTON D"
+};
+
+static int pad_binding_equal(const pad_binding_t *a,
+                             const pad_binding_t *bnd)
+{
+    return a->type == bnd->type &&
+           a->index == bnd->index &&
+           a->direction == bnd->direction;
+}
+
+static int menu_find_pad_conflict(int player, int action,
+                                  const pad_binding_t *binding)
+{
+    int i;
+
+    if (binding->type == PAD_NONE)
+        return -1;
+
+    for (i = 0; i < 8; i++) {
+        if (i != action &&
+            pad_players[player][i].type != PAD_NONE &&
+            pad_binding_equal(&pad_players[player][i], binding))
+            return i;
+    }
+
+    return -1;
+}
+
+static int pad_device_neutral(SDL_Joystick *j)
+{
+    int i;
+
+    if (!j || !SDL_JoystickGetAttached(j))
+        return 0;
+
+    for (i = 0; i < SDL_JoystickNumButtons(j); i++)
+        if (SDL_JoystickGetButton(j, i))
+            return 0;
+
+    for (i = 0; i < SDL_JoystickNumAxes(j); i++) {
+        int value = SDL_JoystickGetAxis(j, i);
+        if (value > AXIS_DEADZONE || value < -AXIS_DEADZONE)
+            return 0;
+    }
+
+    for (i = 0; i < SDL_JoystickNumHats(j); i++)
+        if (SDL_JoystickGetHat(j, i) != SDL_HAT_CENTERED)
+            return 0;
+
+    return 1;
+}
+
+static void menu_cancel_pad_capture(void)
+{
+    s_pad_capturing = false;
+    s_pad_capture_wait_neutral = true;
+    s_pad_capture_player = -1;
+    s_pad_capture_action = -1;
+    s_pad_conflict_action = -1;
+    snprintf(s_menu_status, sizeof s_menu_status, "CANCELADO");
+}
+
+static void menu_start_pad_capture(int action)
+{
+    int player = menu_pad_player();
+
+    if (player < 0 || action < 0 || action >= 8)
+        return;
+
+    if (!devices[player].joystick ||
+        !SDL_JoystickGetAttached(devices[player].joystick)) {
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "SIN MANDO CONECTADO");
+        return;
+    }
+
+    s_pad_capture_player = player;
+    s_pad_capture_action = action;
+    s_pad_conflict_action = -1;
+    s_pad_capturing = true;
+    s_pad_capture_wait_neutral = true;
+    snprintf(s_menu_status, sizeof s_menu_status,
+             "SUELTE EL MANDO");
+}
+
+static void menu_finish_pad_capture(const pad_binding_t *binding)
+{
+    int conflict;
+    int player = s_pad_capture_player;
+    int action = s_pad_capture_action;
+
+    if (player < 0 || player > 1 || action < 0 || action >= 8) {
+        menu_cancel_pad_capture();
+        return;
+    }
+
+    conflict = menu_find_pad_conflict(player, action, binding);
+    if (conflict >= 0) {
+        s_pad_capturing = false;
+        s_pad_conflict_action = conflict;
+        s_pad_conflict_binding = *binding;
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "EN USO: ENTER CAMBIA");
+        return;
+    }
+
+    pad_players[player][action] = *binding;
+    s_pad_capturing = false;
+    s_pad_capture_wait_neutral = true;
+    s_pad_capture_player = -1;
+    s_pad_capture_action = -1;
+    save_bindings();
+}
+
+static void menu_capture_pad_event(const SDL_Event *e)
+{
+    SDL_Joystick *j;
+    SDL_JoystickID wanted;
+    pad_binding_t binding;
+
+    if (!s_pad_capturing || s_pad_capture_player < 0 ||
+        s_pad_capture_player > 1)
+        return;
+
+    j = devices[s_pad_capture_player].joystick;
+    if (!j || !SDL_JoystickGetAttached(j)) {
+        menu_cancel_pad_capture();
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "MANDO DESCONECTADO");
+        return;
+    }
+
+    wanted = devices[s_pad_capture_player].instance_id;
+    binding.type = PAD_NONE;
+    binding.index = 0;
+    binding.direction = 0;
+
+    if (s_pad_capture_wait_neutral)
+        return;
+
+    if (e->type == SDL_JOYBUTTONDOWN &&
+        e->jbutton.which == wanted &&
+        e->jbutton.button < 128) {
+        binding.type = PAD_BUTTON;
+        binding.index = (int)e->jbutton.button;
+    } else if (e->type == SDL_JOYHATMOTION &&
+               e->jhat.which == wanted &&
+               e->jhat.value != SDL_HAT_CENTERED &&
+               e->jhat.hat < 16) {
+        binding.type = PAD_HAT;
+        binding.index = (int)e->jhat.hat;
+
+        if (e->jhat.value & SDL_HAT_UP)
+            binding.direction = SDL_HAT_UP;
+        else if (e->jhat.value & SDL_HAT_DOWN)
+            binding.direction = SDL_HAT_DOWN;
+        else if (e->jhat.value & SDL_HAT_LEFT)
+            binding.direction = SDL_HAT_LEFT;
+        else if (e->jhat.value & SDL_HAT_RIGHT)
+            binding.direction = SDL_HAT_RIGHT;
+        else
+            return;
+    } else if (e->type == SDL_JOYAXISMOTION &&
+               e->jaxis.which == wanted &&
+               e->jaxis.axis < 16) {
+        if (e->jaxis.value < -AXIS_DEADZONE)
+            binding.type = PAD_AXIS_NEG;
+        else if (e->jaxis.value > AXIS_DEADZONE)
+            binding.type = PAD_AXIS_POS;
+        else
+            return;
+        binding.index = (int)e->jaxis.axis;
+    } else {
+        return;
+    }
+
+    menu_finish_pad_capture(&binding);
+}
+
+static void menu_update_pad_capture(void)
+{
+    SDL_Joystick *j;
+
+    if (!s_pad_capturing || !s_pad_capture_wait_neutral)
+        return;
+
+    if (s_pad_capture_player < 0 || s_pad_capture_player > 1) {
+        menu_cancel_pad_capture();
+        return;
+    }
+
+    j = devices[s_pad_capture_player].joystick;
+    if (!j || !SDL_JoystickGetAttached(j)) {
+        menu_cancel_pad_capture();
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "SIN MANDO CONECTADO");
+        return;
+    }
+
+    if (pad_device_neutral(j)) {
+        s_pad_capture_wait_neutral = false;
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "PULSE MANDO SUPR: AUTO");
+    }
+}
+
+static void menu_resolve_pad_conflict(void)
+{
+    pad_binding_t *target;
+    pad_binding_t *other;
+    pad_binding_t old_target;
+
+    if (s_pad_conflict_action < 0 ||
+        s_pad_capture_player < 0 || s_pad_capture_player > 1 ||
+        s_pad_capture_action < 0 || s_pad_capture_action >= 8)
+        return;
+
+    target = &pad_players[s_pad_capture_player][s_pad_capture_action];
+    other = &pad_players[s_pad_capture_player][s_pad_conflict_action];
+    old_target = *target;
+
+    *target = s_pad_conflict_binding;
+    *other = old_target;
+
+    s_pad_capturing = false;
+    s_pad_capture_wait_neutral = true;
+    s_pad_capture_player = -1;
+    s_pad_capture_action = -1;
+    s_pad_conflict_action = -1;
     save_bindings();
 }
 
@@ -1372,17 +1626,19 @@ static int menu_item_count(void)
         return 3;
 
     case MENU_CONTROLS:
-        return 4;
+        return 6;
 
     case MENU_GRAPHICS:
         return 2;
 
     case MENU_KEYBOARD_P1:
     case MENU_KEYBOARD_P2:
+    case MENU_PAD_P1:
+    case MENU_PAD_P2:
         return 9; /* 8 actions + Back */
 
     case MENU_KEYBOARD_SYSTEM:
-        return 10; /* 9 acciones + Volver */
+        return 10; /* 9 actions + Back */
 
     default:
         return 0;
@@ -1391,28 +1647,34 @@ static int menu_item_count(void)
 
 static int menu_first_item_y(int panel_y)
 {
-    if (menu_is_keyboard_screen())
+    if (menu_is_keyboard_screen() || menu_is_pad_screen())
         return panel_y + 28;
 
     if (s_menu_screen == MENU_MAIN)
         return panel_y + 42;
 
     if (s_menu_screen == MENU_CONTROLS)
-        return panel_y + 42;
+        return panel_y + 32;
 
     return panel_y + 48;
 }
 
 static void menu_back(void)
 {
-    if (s_menu_capturing || s_conflict_action >= 0) {
-        menu_cancel_capture();
+    if (s_menu_capturing || s_conflict_action >= 0 ||
+        s_pad_capturing || s_pad_conflict_action >= 0) {
+        if (s_pad_capturing || s_pad_conflict_action >= 0)
+            menu_cancel_pad_capture();
+        else
+            menu_cancel_capture();
         return;
     }
 
     if (s_menu_screen == MENU_KEYBOARD_P1 ||
         s_menu_screen == MENU_KEYBOARD_P2 ||
-        s_menu_screen == MENU_KEYBOARD_SYSTEM) {
+        s_menu_screen == MENU_KEYBOARD_SYSTEM ||
+        s_menu_screen == MENU_PAD_P1 ||
+        s_menu_screen == MENU_PAD_P2) {
         s_menu_screen = MENU_CONTROLS;
         s_menu_selection = 0;
     } else if (s_menu_screen != MENU_MAIN) {
@@ -1427,13 +1689,20 @@ static void menu_back(void)
 
 static void menu_activate(void)
 {
-    if (s_menu_capturing)
+    if (s_menu_capturing || s_pad_capturing)
         return;
 
     if (s_conflict_action >= 0) {
         menu_resolve_conflict();
         return;
     }
+
+    if (s_pad_conflict_action >= 0) {
+        menu_resolve_pad_conflict();
+        return;
+    }
+
+    s_menu_status[0] = '\0';
 
     switch (s_menu_screen) {
     case MENU_MAIN:
@@ -1454,6 +1723,10 @@ static void menu_activate(void)
         else if (s_menu_selection == 1)
             s_menu_screen = MENU_KEYBOARD_P2;
         else if (s_menu_selection == 2)
+            s_menu_screen = MENU_PAD_P1;
+        else if (s_menu_selection == 3)
+            s_menu_screen = MENU_PAD_P2;
+        else if (s_menu_selection == 4)
             s_menu_screen = MENU_KEYBOARD_SYSTEM;
         else {
             menu_back();
@@ -1482,10 +1755,18 @@ static void menu_activate(void)
 
         menu_start_capture(menu_keyboard_action_index());
         break;
+
+    case MENU_PAD_P1:
+    case MENU_PAD_P2:
+        if (s_menu_selection == 8) {
+            menu_back();
+            return;
+        }
+
+        menu_start_pad_capture(s_menu_selection);
+        break;
     }
 
-    if (!s_menu_capturing && s_conflict_action < 0)
-        s_menu_status[0] = '\0';
 }
 
 static void menu_move(int direction) {
@@ -1505,8 +1786,14 @@ static void menu_move(int direction) {
 static void menu_draw(void)
 {
     int keyboard_screen = menu_is_keyboard_screen();
-    int panel_w = keyboard_screen ? 240 : 200;
-    int panel_h = keyboard_screen ? 210 : 140;
+    int pad_screen = menu_is_pad_screen();
+    int controls_screen = s_menu_screen == MENU_CONTROLS;
+    int panel_w = keyboard_screen ? 240 :
+                  pad_screen ? 260 :
+                  controls_screen ? 230 : 200;
+    int panel_h = keyboard_screen ? 210 :
+                  pad_screen ? 210 :
+                  controls_screen ? 190 : 140;
 
     SDL_Rect panel = {
         NG_SCREEN_W / 2 - panel_w / 2,
@@ -1548,8 +1835,10 @@ static void menu_draw(void)
         title = "CONTROLES";
         items[0] = "TECLADO P1";
         items[1] = "TECLADO P2";
-        items[2] = "TECLAS SISTEMA";
-        items[3] = "VOLVER";
+        items[2] = "MANDO P1";
+        items[3] = "MANDO P2";
+        items[4] = "TECLAS SISTEMA";
+        items[5] = "VOLVER";
         break;
 
     case MENU_GRAPHICS:
@@ -1570,6 +1859,14 @@ static void menu_draw(void)
         title = "TECLAS SISTEMA";
         break;
 
+    case MENU_PAD_P1:
+        title = "MANDO P1";
+        break;
+
+    case MENU_PAD_P2:
+        title = "MANDO P2";
+        break;
+
     default:
         return;
     }
@@ -1579,7 +1876,7 @@ static void menu_draw(void)
 
     count = menu_item_count();
     first_y = menu_first_item_y(panel.y);
-    row_step = keyboard_screen ? 17 : 22;
+    row_step = (keyboard_screen || pad_screen) ? 17 : 22;
 
     for (i = 0; i < count; i++) {
         char action_text[64];
@@ -1591,7 +1888,7 @@ static void menu_draw(void)
             int action_count = menu_keyboard_action_count();
 
             if (i < action_count) {
-                int action = menu_keyboard_action_index();
+                int action;
 
                 if (s_menu_screen == MENU_KEYBOARD_P1)
                     action = i;
@@ -1608,6 +1905,21 @@ static void menu_draw(void)
             } else {
                 label = "VOLVER";
             }
+        } else if (pad_screen) {
+            int player = menu_pad_player();
+
+            if (i < 8) {
+                char binding_text[32];
+                format_pad_binding(&pad_players[player][i],
+                                   binding_text, sizeof binding_text);
+                snprintf(action_text, sizeof action_text,
+                         "%s: %s", pad_action_labels[i],
+                         pad_players[player][i].type == PAD_NONE
+                             ? "AUTO" : binding_text);
+                label = action_text;
+            } else {
+                label = "VOLVER";
+            }
         } else {
             label = items[i];
         }
@@ -1615,7 +1927,7 @@ static void menu_draw(void)
         option.x = panel.x + 8;
         option.y = first_y + i * row_step;
         option.w = panel.w - 16;
-        option.h = keyboard_screen ? 15 : 18;
+        option.h = (keyboard_screen || pad_screen) ? 15 : 18;
 
         text_color = s_menu_selection == i ? white : muted;
 
@@ -1659,6 +1971,27 @@ static bool menu_run(const uint32_t *fb) {
             if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
                 SDL_Scancode sc = e.key.keysym.scancode;
 
+                if (s_pad_capturing) {
+                    if (sc == SDL_SCANCODE_ESCAPE) {
+                        menu_cancel_pad_capture();
+                    } else if (sc == SDL_SCANCODE_DELETE ||
+                               sc == SDL_SCANCODE_BACKSPACE) {
+                        pad_binding_t automatic = { PAD_NONE, 0, 0 };
+                        menu_finish_pad_capture(&automatic);
+                    }
+                    continue;
+                }
+
+                if (s_pad_conflict_action >= 0) {
+                    if (sc == SDL_SCANCODE_ESCAPE) {
+                        menu_cancel_pad_capture();
+                    } else if (sc == SDL_SCANCODE_RETURN ||
+                               sc == SDL_SCANCODE_SPACE) {
+                        menu_resolve_pad_conflict();
+                    }
+                    continue;
+                }
+
                 if (s_menu_capturing) {
                     menu_capture_key(e.key.keysym.scancode);
                     continue;
@@ -1700,6 +2033,18 @@ static bool menu_run(const uint32_t *fb) {
                     menu_activate();
                 }
             }
+
+            if (s_pad_capturing) {
+                if (e.type == SDL_JOYBUTTONDOWN ||
+                    e.type == SDL_JOYHATMOTION ||
+                    e.type == SDL_JOYAXISMOTION) {
+                    menu_capture_pad_event(&e);
+                }
+                continue;
+            }
+
+            if (s_pad_conflict_action >= 0)
+                continue;
 
             if (e.type == SDL_CONTROLLERBUTTONDOWN) {
                 SDL_GameControllerButton button =
@@ -1747,12 +2092,19 @@ static bool menu_run(const uint32_t *fb) {
                     ? e.motion.x : e.button.x;
                 int my = e.type == SDL_MOUSEMOTION
                     ? e.motion.y : e.button.y;
-                int panel_h = menu_is_keyboard_screen() ? 210 : 140;
+                int keyboard_screen = menu_is_keyboard_screen();
+                int pad_screen = menu_is_pad_screen();
+                int controls_screen = s_menu_screen == MENU_CONTROLS;
+                int panel_h = keyboard_screen ? 210 :
+                              pad_screen ? 210 :
+                              controls_screen ? 190 : 140;
                 int panel_y = NG_SCREEN_H / 2 - panel_h / 2;
                 int first_y = menu_first_item_y(panel_y);
-                int row_step = menu_is_keyboard_screen() ? 17 : 22;
+                int row_step = (keyboard_screen || pad_screen) ? 17 : 22;
                 int count = menu_item_count();
-                int panel_w = menu_is_keyboard_screen() ? 240 : 200;
+                int panel_w = keyboard_screen ? 240 :
+                              pad_screen ? 260 :
+                              controls_screen ? 230 : 200;
                 int i;
 
                 if (mx >= NG_SCREEN_W / 2 - (panel_w / 2 - 8) &&
@@ -1773,6 +2125,8 @@ static bool menu_run(const uint32_t *fb) {
                 }
             }
         }
+
+        menu_update_pad_capture();
 
         if (!s_menu_open)
             break;
@@ -1898,7 +2252,6 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
 
 void window_close(void) {
     int i;
-
     for (i = 0; i < 2; i++)
         close_device(i);
 
