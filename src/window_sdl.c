@@ -759,7 +759,7 @@ static void read_device_identity(SDL_Joystick *j, input_device_t *d)
     d->guid[0] = d->serial[0] = d->path[0] = '\0';
     if (!j) return;
     guid = SDL_JoystickGetGUID(j);
-    SDL_JoystickGetGUIDString(guid, d->guid, sizeof d->guid);
+    SDL_JoystickGetGUIDString(guid, d->guid, (int)sizeof d->guid);
 #if SDL_VERSION_ATLEAST(2, 0, 14)
     value = SDL_JoystickGetSerial(j);
     if (value) snprintf(d->serial, sizeof d->serial, "%s", value);
@@ -1743,7 +1743,7 @@ static void menu_capture_pad_event(const SDL_Event *e)
 
     if (device_assigned_to_other_player(s_pad_capture_player, slot)) {
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "CONTROLLER ALREADY ASSIGNED");
+                 "CONTROLLER ASSIGNED TO OTHER PLAYER");
         return;
     }
 
@@ -1813,7 +1813,7 @@ static void menu_update_pad_capture(void)
 
     snprintf(s_menu_status, sizeof s_menu_status,
              s_pad_reassigning
-                 ? "PRESS A BUTTON ON NEW CONTROLLER"
+                 ? "PRESS A BUTTON ON THE NEW CONTROLLER"
                  : "PRESS A BUTTON OR DELETE: AUTO");
 }
 
