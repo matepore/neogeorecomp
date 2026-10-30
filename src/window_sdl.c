@@ -1688,28 +1688,13 @@ static void menu_capture_pad_event(const SDL_Event *e)
 
     /* Find the controller in the physical device inventory, not by player. */
     slot = find_device(event_id);
-    if (slot < 0) return;
-    if (device_assigned_to_other_player(s_pad_capture_player, slot)) {
-        snprintf(s_menu_status, sizeof s_menu_status, "CONTROLLER ALREADY ASSIGNED");
+    if (slot < 0)
         return;
-    }
-    if (s_pad_reassigning || player_device[s_pad_capture_player] < 0) {
-        assign_device_to_player(s_pad_capture_player, slot);
-        save_bindings();
-    } else if (player_device[s_pad_capture_player] != slot) return;
-    j = devices[slot].joystick;
 
+    j = devices[slot].joystick;
     if (!j || !SDL_JoystickGetAttached(j))
         return;
-    if (s_pad_reassigning) {
-        s_pad_reassigning = false;
-        s_pad_capturing = false;
-        s_pad_capture_wait_neutral = true;
-        s_pad_capture_player = s_pad_capture_action = -1;
-        snprintf(s_menu_status, sizeof s_menu_status, "CONTROLLER ASSIGNED");
-        save_bindings();
-        return;
-    }
+
     binding.type = PAD_NONE;
     binding.index = 0;
     binding.direction = 0;
@@ -1751,6 +1736,32 @@ static void menu_capture_pad_event(const SDL_Event *e)
         binding.index = (int)e->jaxis.axis;
 
     } else {
+        return;
+    }
+
+    if (device_assigned_to_other_player(s_pad_capture_player, slot)) {
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "CONTROLLER ALREADY ASSIGNED");
+        return;
+    }
+
+    if (s_pad_reassigning) {
+        assign_device_to_player(s_pad_capture_player, slot);
+        s_pad_reassigning = false;
+        s_pad_capturing = false;
+        s_pad_capture_wait_neutral = true;
+        s_pad_capture_player = -1;
+        s_pad_capture_action = -1;
+        snprintf(s_menu_status, sizeof s_menu_status,
+                 "CONTROLLER ASSIGNED");
+        save_bindings();
+        return;
+    }
+
+    if (player_device[s_pad_capture_player] < 0) {
+        assign_device_to_player(s_pad_capture_player, slot);
+        save_bindings();
+    } else if (player_device[s_pad_capture_player] != slot) {
         return;
     }
 
