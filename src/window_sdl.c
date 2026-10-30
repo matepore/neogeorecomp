@@ -25,6 +25,18 @@ static bool s_menu_open = false;
 static int s_menu_selection = 0;
 
 typedef enum {
+    GRAPHICS_ORIGINAL = 0,
+    GRAPHICS_4_3,
+    GRAPHICS_16_9
+} graphics_aspect_t;
+
+static int s_window_scale = 2;
+static graphics_aspect_t s_graphics_aspect = GRAPHICS_ORIGINAL;
+static bool s_fullscreen = false;
+static int s_canvas_w = NG_SCREEN_W;
+static int s_canvas_h = NG_SCREEN_H;
+
+typedef enum {
     MENU_MAIN = 0,
     MENU_CONTROLS,
     MENU_GRAPHICS,
@@ -1175,6 +1187,150 @@ static void read_controller(int player, ng_input_t *in) {
     }
 }
 
+static void graphics_canvas_size(int *w, int *h)
+{
+    switch (s_graphics_aspect) {
+    case GRAPHICS_4_3:
+        *w = 320;
+        *h = 240;
+        break;
+    case GRAPHICS_16_9:
+        *w = 448;
+        *h = 252;
+        break;
+    case GRAPHICS_ORIGINAL:
+    default:
+        *w = NG_SCREEN_W;
+        *h = NG_SCREEN_H;
+        break;
+    }
+}
+
+static void graphics_game_rect(SDL_Rect *rect)
+{
+    if (s_graphics_aspect == GRAPHICS_16_9) {
+        rect->x = (s_canvas_w - 336) / 2;
+        rect->y = 0;
+        rect->w = 336;
+        rect->h = 252;
+    } else {
+        rect->x = 0;
+        rect->y = 0;
+        rect->w = s_canvas_w;
+        rect->h = s_canvas_h;
+    }
+}
+
+static void graphics_save(void)
+{
+    FILE *f = fopen("graphics.cfg", "w");
+    if (!f) {
+        fprintf(stderr, "[graphics] cannot write graphics.cfg\n");
+        return;
+    }
+
+    fprintf(f, "WINDOW_SIZE=%dX\n", s_window_scale);
+    fprintf(f, "ASPECT_RATIO=%s\n",
+            s_graphics_aspect == GRAPHICS_4_3 ? "4:3" :
+            s_graphics_aspect == GRAPHICS_16_9 ? "16:9" : "ORIGINAL");
+    fprintf(f, "FULLSCREEN=%s\n", s_fullscreen ? "ON" : "OFF");
+    fclose(f);
+}
+
+static void graphics_load(int fallback_scale)
+{
+    FILE *f;
+    char line[128];
+
+    s_window_scale = fallback_scale < 2 ? 2 :
+                     fallback_scale > 5 ? 5 : fallback_scale;
+    s_graphics_aspect = GRAPHICS_ORIGINAL;
+    s_fullscreen = false;
+
+    f = fopen("graphics.cfg", "r");
+    if (!f)
+        return;
+
+    while (fgets(line, sizeof line, f)) {
+        char key[64], value[64];
+
+        if (sscanf(line, " %63[^=]=%63s", key, value) != 2)
+            continue;
+
+        if (strcmp(key, "WINDOW_SIZE") == 0) {
+            int parsed = 0;
+            if (sscanf(value, "%dX", &parsed) == 1 &&
+                parsed >= 2 && parsed <= 5)
+                s_window_scale = parsed;
+        } else if (strcmp(key, "ASPECT_RATIO") == 0) {
+            if (strcmp(value, "4:3") == 0)
+                s_graphics_aspect = GRAPHICS_4_3;
+            else if (strcmp(value, "16:9") == 0)
+                s_graphics_aspect = GRAPHICS_16_9;
+            else
+                s_graphics_aspect = GRAPHICS_ORIGINAL;
+        } else if (strcmp(key, "FULLSCREEN") == 0) {
+            s_fullscreen = strcmp(value, "ON") == 0;
+        }
+    }
+
+    fclose(f);
+}
+
+static void graphics_apply(bool resize_window)
+{
+    Uint32 flags;
+    int width, height;
+
+    graphics_canvas_size(&s_canvas_w, &s_canvas_h);
+
+    if (s_ren)
+        SDL_RenderSetLogicalSize(s_ren, s_canvas_w, s_canvas_h);
+
+    if (!s_win)
+        return;
+
+    flags = SDL_GetWindowFlags(s_win);
+    if (s_fullscreen) {
+        if (!(flags & SDL_WINDOW_FULLSCREEN_DESKTOP) &&
+            SDL_SetWindowFullscreen(s_win, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+            fprintf(stderr, "[graphics] fullscreen: %s\n", SDL_GetError());
+    } else {
+        if (flags & SDL_WINDOW_FULLSCREEN) {
+            if (SDL_SetWindowFullscreen(s_win, 0) != 0)
+                fprintf(stderr, "[graphics] windowed mode: %s\n", SDL_GetError());
+        }
+        if (resize_window) {
+            width = s_canvas_w * s_window_scale;
+            height = s_canvas_h * s_window_scale;
+            SDL_SetWindowSize(s_win, width, height);
+            SDL_SetWindowPosition(s_win, SDL_WINDOWPOS_CENTERED,
+                                  SDL_WINDOWPOS_CENTERED);
+        }
+    }
+}
+
+static void graphics_change(int option, int direction)
+{
+    if (option == 0) {
+        s_window_scale += direction;
+        if (s_window_scale < 2) s_window_scale = 5;
+        if (s_window_scale > 5) s_window_scale = 2;
+    } else if (option == 1) {
+        int aspect = (int)s_graphics_aspect + direction;
+        if (aspect < GRAPHICS_ORIGINAL) aspect = GRAPHICS_16_9;
+        if (aspect > GRAPHICS_16_9) aspect = GRAPHICS_ORIGINAL;
+        s_graphics_aspect = (graphics_aspect_t)aspect;
+    } else if (option == 2) {
+        s_fullscreen = !s_fullscreen;
+    } else {
+        return;
+    }
+
+    graphics_apply(true);
+    graphics_save();
+}
+
 int window_open(const char *title, int scale) {
     int i;
 
@@ -1198,11 +1354,13 @@ int window_open(const char *title, int scale) {
     SDL_GameControllerEventState(SDL_ENABLE);
 
     load_bindings();
+    graphics_load(scale);
+    graphics_canvas_size(&s_canvas_w, &s_canvas_h);
 
     s_win = SDL_CreateWindow(
         title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        NG_SCREEN_W * scale, NG_SCREEN_H * scale,
-        SDL_WINDOW_RESIZABLE);
+        s_canvas_w * s_window_scale, s_canvas_h * s_window_scale,
+        0);
 
     if (!s_win) {
         fprintf(stderr, "error: SDL_CreateWindow: %s\n", SDL_GetError());
@@ -1221,7 +1379,7 @@ int window_open(const char *title, int scale) {
         return -1;
     }
 
-    SDL_RenderSetLogicalSize(s_ren, NG_SCREEN_W, NG_SCREEN_H);
+    SDL_RenderSetLogicalSize(s_ren, s_canvas_w, s_canvas_h);
 
     s_tex = SDL_CreateTexture(
         s_ren, SDL_PIXELFORMAT_ARGB8888,
@@ -1235,6 +1393,9 @@ int window_open(const char *title, int scale) {
         SDL_Quit();
         return -1;
     }
+
+    graphics_apply(false);
+    graphics_save();
 
     /* Pick up controllers already connected before the game launched. */
     for (i = 0; i < SDL_NumJoysticks(); i++)
@@ -1314,23 +1475,11 @@ static void read_keys(ng_input_t *in) {
     (void)i;
 }
 
-static void menu_toggle_fullscreen(void) {
-    Uint32 flags;
-    bool fullscreen;
-
-    if (!s_win)
-        return;
-
-    flags = SDL_GetWindowFlags(s_win);
-    fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
-
-    if (SDL_SetWindowFullscreen(
-            s_win,
-            fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
-        fprintf(stderr,
-                "Failed to change display mode: %s\n",
-                SDL_GetError());
-    }
+static void menu_toggle_fullscreen(void)
+{
+    s_fullscreen = !s_fullscreen;
+    graphics_apply(true);
+    graphics_save();
 }
 
 static const char *keyboard_labels[25] = {
@@ -1935,7 +2084,7 @@ static int menu_item_count(void)
         return 6;
 
     case MENU_GRAPHICS:
-        return 2;
+        return 4;
 
     case MENU_KEYBOARD_P1:
     case MENU_KEYBOARD_P2:
@@ -2101,8 +2250,8 @@ static void menu_activate(void)
         break;
 
     case MENU_GRAPHICS:
-        if (s_menu_selection == 0) {
-            menu_toggle_fullscreen();
+        if (s_menu_selection < 3) {
+            graphics_change(s_menu_selection, 1);
         } else {
             menu_back();
         }
@@ -2175,11 +2324,12 @@ static void menu_draw(void)
                   controls_screen ? 230 : 200;
     int panel_h = keyboard_screen ? 210 :
                   pad_screen ? 230 :
-                  controls_screen ? 190 : 140;
+                  controls_screen ? 190 :
+                  s_menu_screen == MENU_GRAPHICS ? 160 : 140;
 
     SDL_Rect panel = {
-        NG_SCREEN_W / 2 - panel_w / 2,
-        NG_SCREEN_H / 2 - panel_h / 2,
+        s_canvas_w / 2 - panel_w / 2,
+        s_canvas_h / 2 - panel_h / 2,
         panel_w, panel_h
     };
 
@@ -2189,6 +2339,8 @@ static void menu_draw(void)
 
     const char *title = "";
     const char *items[9] = { "", "", "", "", "", "", "", "", "" };
+    char graphics_size[32];
+    char graphics_aspect[40];
 
     int count;
     int first_y;
@@ -2225,8 +2377,16 @@ static void menu_draw(void)
 
     case MENU_GRAPHICS:
         title = "GRAPHICS";
-        items[0] = "TOGGLE FULLSCREEN";
-        items[1] = "BACK";
+        snprintf(graphics_size, sizeof graphics_size,
+                 "WINDOW SIZE: %dX", s_window_scale);
+        snprintf(graphics_aspect, sizeof graphics_aspect,
+                 "ASPECT RATIO: %s",
+                 s_graphics_aspect == GRAPHICS_4_3 ? "4:3" :
+                 s_graphics_aspect == GRAPHICS_16_9 ? "16:9" : "ORIGINAL");
+        items[0] = graphics_size;
+        items[1] = graphics_aspect;
+        items[2] = s_fullscreen ? "FULLSCREEN: ON" : "FULLSCREEN: OFF";
+        items[3] = "BACK";
         break;
 
     case MENU_KEYBOARD_P1:
@@ -2422,6 +2582,12 @@ static bool menu_run(const uint32_t *fb) {
                     menu_move(-1);
                 } else if (sc == SDL_SCANCODE_DOWN) {
                     menu_move(1);
+                } else if (sc == SDL_SCANCODE_LEFT) {
+                    if (s_menu_screen == MENU_GRAPHICS)
+                        graphics_change(s_menu_selection, -1);
+                } else if (sc == SDL_SCANCODE_RIGHT) {
+                    if (s_menu_screen == MENU_GRAPHICS)
+                        graphics_change(s_menu_selection, 1);
                 } else if (sc == SDL_SCANCODE_RETURN ||
                            sc == SDL_SCANCODE_SPACE) {
                     menu_activate();
@@ -2448,6 +2614,12 @@ static bool menu_run(const uint32_t *fb) {
                     menu_move(-1);
                 } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
                     menu_move(1);
+                } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+                    if (s_menu_screen == MENU_GRAPHICS)
+                        graphics_change(s_menu_selection, -1);
+                } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                    if (s_menu_screen == MENU_GRAPHICS)
+                        graphics_change(s_menu_selection, 1);
                 } else if (button == SDL_CONTROLLER_BUTTON_A ||
                            button == SDL_CONTROLLER_BUTTON_START) {
                     menu_activate();
@@ -2465,6 +2637,12 @@ static bool menu_run(const uint32_t *fb) {
                         menu_move(-1);
                     else if (e.jhat.value & SDL_HAT_DOWN)
                         menu_move(1);
+                    else if (s_menu_screen == MENU_GRAPHICS &&
+                             (e.jhat.value & SDL_HAT_LEFT))
+                        graphics_change(s_menu_selection, -1);
+                    else if (s_menu_screen == MENU_GRAPHICS &&
+                             (e.jhat.value & SDL_HAT_RIGHT))
+                        graphics_change(s_menu_selection, 1);
                 }
             }
 
@@ -2491,8 +2669,9 @@ static bool menu_run(const uint32_t *fb) {
                 int controls_screen = s_menu_screen == MENU_CONTROLS;
                 int panel_h = keyboard_screen ? 210 :
                               pad_screen ? 230 :
-                              controls_screen ? 190 : 140;
-                int panel_y = NG_SCREEN_H / 2 - panel_h / 2;
+                              controls_screen ? 190 :
+                              s_menu_screen == MENU_GRAPHICS ? 160 : 140;
+                int panel_y = s_canvas_h / 2 - panel_h / 2;
                 int first_y = menu_first_item_y(panel_y);
                 int row_step = menu_is_profile_screen() ? 13 :
                     keyboard_screen ? 17 : 22;
@@ -2502,8 +2681,8 @@ static bool menu_run(const uint32_t *fb) {
                               controls_screen ? 230 : 200;
                 int i;
 
-                if (mx >= NG_SCREEN_W / 2 - (panel_w / 2 - 8) &&
-                    mx <= NG_SCREEN_W / 2 + (panel_w / 2 - 8)) {
+                if (mx >= s_canvas_w / 2 - (panel_w / 2 - 8) &&
+                    mx <= s_canvas_w / 2 + (panel_w / 2 - 8)) {
                     for (i = 0; i < count; i++) {
                         int top = first_y + i * row_step;
 
@@ -2532,8 +2711,11 @@ static bool menu_run(const uint32_t *fb) {
         SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
         SDL_RenderClear(s_ren);
 
-        if (s_tex)
-            SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+        if (s_tex) {
+            SDL_Rect game_rect;
+            graphics_game_rect(&game_rect);
+            SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
+        }
 
         menu_draw();
         SDL_RenderPresent(s_ren);
@@ -2630,7 +2812,11 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
         SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
         SDL_RenderClear(s_ren);
 
-        SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+        {
+            SDL_Rect game_rect;
+            graphics_game_rect(&game_rect);
+            SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
+        }
         SDL_RenderPresent(s_ren);
     }
 
