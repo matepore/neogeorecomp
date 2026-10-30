@@ -804,6 +804,16 @@ static void assign_device_to_player(int player, int slot)
     snprintf(player_device_path[player], sizeof player_device_path[player], "%s", d->path);
 }
 
+static void clear_player_device_identity(int player)
+{
+    if (player < 0 || player > 1)
+        return;
+    player_device[player] = -1;
+    player_device_guid[player][0] = '\0';
+    player_device_serial[player][0] = '\0';
+    player_device_path[player][0] = '\0';
+}
+
 static void close_device(int device_slot) {
     input_device_t *d;
 
@@ -1742,9 +1752,16 @@ static void menu_capture_pad_event(const SDL_Event *e)
     }
 
     if (device_assigned_to_other_player(s_pad_capture_player, slot)) {
-        snprintf(s_menu_status, sizeof s_menu_status,
-                 "CONTROLLER ASSIGNED TO OTHER PLAYER");
-        return;
+        int other = s_pad_capture_player == 0 ? 1 : 0;
+
+        if (!s_pad_reassigning) {
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "CONTROLLER ASSIGNED TO OTHER PLAYER");
+            return;
+        }
+
+        /* Explicit reassignment transfers ownership between player profiles. */
+        clear_player_device_identity(other);
     }
 
     if (s_pad_reassigning) {
