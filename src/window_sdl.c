@@ -776,10 +776,12 @@ static int device_matches_player_identity(int player, const input_device_t *d)
     if (player < 0 || player > 1 || !d ||
         !player_device_guid[player][0] ||
         strcmp(player_device_guid[player], d->guid) != 0) return 0;
-    if (player_device_serial[player][0])
-        return d->serial[0] && strcmp(player_device_serial[player], d->serial) == 0;
-    if (player_device_path[player][0])
-        return d->path[0] && strcmp(player_device_path[player], d->path) == 0;
+    if (player_device_serial[player][0] && d->serial[0])
+        return strcmp(player_device_serial[player], d->serial) == 0;
+    if (player_device_path[player][0] && d->path[0])
+        return strcmp(player_device_path[player], d->path) == 0;
+    if (player_device_serial[player][0] || player_device_path[player][0])
+        return 0;
     for (i = 0; i < MAX_INPUT_DEVICES; i++)
         if (devices[i].joystick && SDL_JoystickGetAttached(devices[i].joystick) &&
             strcmp(devices[i].guid, d->guid) == 0) count++;
@@ -1810,7 +1812,9 @@ static void menu_update_pad_capture(void)
     s_pad_capture_wait_neutral = false;
 
     snprintf(s_menu_status, sizeof s_menu_status,
-             s_pad_reassigning ? "PRESS A BUTTON ON NEW CONTROLLER" : "PRESS DELETE: AUTO");
+             s_pad_reassigning
+                 ? "PRESS A BUTTON ON NEW CONTROLLER"
+                 : "PRESS A BUTTON OR DELETE: AUTO");
 }
 
 static void menu_resolve_pad_conflict(void)
