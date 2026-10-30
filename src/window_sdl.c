@@ -2,7 +2,7 @@
  * SDL2 video, audio, keyboard and game-controller input.
  * Keyboard bindings are loaded from controls.cfg.
  * SDL-mapped controllers and generic joysticks are supported.
- * First connected device is player 1; second is player 2.
+ * Controllers are assigned to players through their control profiles.
  * Escape quits the game.
  */
 #include "ng_internal.h"
@@ -91,11 +91,11 @@ static int s_pad_conflict_action = -1;
 static pad_binding_t s_pad_conflict_binding;
 static bindings_t b;
 
-/* Inventario físico de dispositivos conectados. */
+/* Physical inventory of connected devices. */
 static input_device_t devices[MAX_INPUT_DEVICES];
 
-/* Índice del dispositivo físico asignado a cada jugador.
-   -1 significa que el jugador no tiene mando asignado. */
+/* Physical device slot assigned to each player.
+   -1 means that the player has no controller assigned. */
 static int player_device[2] = { -1, -1 };
 
 static const char *names[25] = {
@@ -663,7 +663,7 @@ static int save_bindings(void)
     f = fopen("controls.cfg", "w");
     if (!f) {
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "ERROR AL GUARDAR");
+                 "SAVE ERROR");
         return 0;
     }
 
@@ -709,12 +709,12 @@ static int save_bindings(void)
 
     if (!ok) {
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "ERROR AL GUARDAR");
+                 "SAVE ERROR");
         return 0;
     }
 
     snprintf(s_menu_status, sizeof s_menu_status,
-             "CONFIG GUARDADA");
+             "SETTINGS SAVED");
     return 1;
 }
 
@@ -726,7 +726,7 @@ static void close_device(int device_slot) {
 
     d = &devices[device_slot];
 
-    /* Ningún jugador puede conservar una referencia al dispositivo. */
+    /* No player can retain a reference to a disconnected device. */
     if (player_device[0] == device_slot)
         player_device[0] = -1;
 
@@ -791,7 +791,7 @@ static int open_device(int device_index) {
     if (find_device(instance_id) >= 0)
         return 0;
 
-    /* Buscar un espacio libre en el inventario físico. */
+    /* Find a free slot in the physical device inventory. */
     for (slot = 0; slot < MAX_INPUT_DEVICES; slot++) {
         if (!devices[slot].controller &&
             !devices[slot].joystick) {
@@ -840,7 +840,7 @@ static int open_device(int device_index) {
         SDL_JoystickInstanceID(devices[slot].joystick);
 
     /* Mantener la asignación automática existente:
-       primer mando libre -> P1, segundo mando libre -> P2. */
+       first available controller -> P1, second available controller -> P2. */
     for (player = 0; player < 2; player++) {
         if (player_device[player] < 0) {
             player_device[player] = slot;
@@ -1039,7 +1039,7 @@ static void read_controller(int player, ng_input_t *in) {
             ? controller_button(c, SDL_CONTROLLER_BUTTON_BACK)
             : joystick_button(j, 4);
 
-        /* START y COIN pertenecen al perfil del jugador. */
+        /* START and COIN belong to the player profile. */
         if (pad_players[0][8].type != PAD_NONE)
             start = pad_binding_active(j, &pad_players[0][8]);
 
@@ -1234,7 +1234,7 @@ static void menu_toggle_fullscreen(void) {
             s_win,
             fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
         fprintf(stderr,
-                "No se pudo cambiar el modo de pantalla: %s\n",
+                "Failed to change display mode: %s\n",
                 SDL_GetError());
     }
 }
@@ -1246,7 +1246,7 @@ static const char *keyboard_labels[25] = {
     "P2 A", "P2 B", "P2 C", "P2 D",
     "START 1", "START 2", "SELECT",
     "COIN 1", "COIN 2", "SERVICE", "TEST",
-    "ABRIR OVERLAY", "PANTALLA COMPLETA"
+    "OPEN OVERLAY", "FULLSCREEN"
 };
 
 static int menu_is_keyboard_screen(void)
@@ -1274,8 +1274,8 @@ static int menu_keyboard_action_index(void)
         18, /* SELECT */
         21, /* SERVICE */
         22, /* TEST */
-        23, /* ABRIR OVERLAY */
-        24  /* PANTALLA COMPLETA */
+        23, /* OPEN OVERLAY */
+        24  /* FULLSCREEN */
     };
 
     if (s_menu_screen == MENU_KEYBOARD_P1) {
@@ -1354,7 +1354,7 @@ static void menu_start_capture(int action)
     s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
 
     snprintf(s_menu_status, sizeof s_menu_status,
-             "PULSE UNA TECLA");
+             "PRESS A KEY");
 }
 
 static void menu_cancel_capture(void)
@@ -1364,7 +1364,7 @@ static void menu_cancel_capture(void)
     s_conflict_action = -1;
     s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
 
-    snprintf(s_menu_status, sizeof s_menu_status, "CANCELADO");
+    snprintf(s_menu_status, sizeof s_menu_status, "CANCELLED");
 }
 
 static void menu_capture_key(SDL_Scancode scancode)
@@ -1395,7 +1395,7 @@ static void menu_capture_key(SDL_Scancode scancode)
         s_conflict_scancode = scancode;
 
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "EN USO: ENTER CAMBIA");
+                 "IN USE: ENTER TO SWAP");
         return;
     }
 
@@ -1457,8 +1457,8 @@ static int menu_pad_player(void)
 }
 
 static const char *pad_action_labels[10] = {
-    "ARRIBA", "ABAJO", "IZQUIERDA", "DERECHA",
-    "BOTON A", "BOTON B", "BOTON C", "BOTON D",
+    "UP", "DOWN", "LEFT", "RIGHT",
+    "BUTTON A", "BUTTON B", "BUTTON C", "BUTTON D",
     "START", "COIN"
 };
 
@@ -1519,7 +1519,7 @@ static void menu_cancel_pad_capture(void)
     s_pad_capture_player = -1;
     s_pad_capture_action = -1;
     s_pad_conflict_action = -1;
-    snprintf(s_menu_status, sizeof s_menu_status, "CANCELADO");
+    snprintf(s_menu_status, sizeof s_menu_status, "CANCELLED");
 }
 
 static void menu_start_pad_capture(int action)
@@ -1536,7 +1536,7 @@ static void menu_start_pad_capture(int action)
     s_pad_capture_wait_neutral = true;
 
     snprintf(s_menu_status, sizeof s_menu_status,
-             "CONECTE O SUELTE EL MANDO");
+             "CONNECT OR RELEASE THE CONTROLLER");
 }
 
 static void menu_finish_pad_capture(const pad_binding_t *binding)
@@ -1556,7 +1556,7 @@ static void menu_finish_pad_capture(const pad_binding_t *binding)
         s_pad_conflict_action = conflict;
         s_pad_conflict_binding = *binding;
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "EN USO: ENTER CAMBIA");
+                 "IN USE: ENTER TO SWAP");
         return;
     }
 
@@ -1579,7 +1579,7 @@ static void menu_capture_pad_event(const SDL_Event *e)
         s_pad_capture_player > 1)
         return;
 
-    /* Obtener el identificador del mando que generó el evento. */
+    /* Get the identifier of the controller that generated the event. */
     if (e->type == SDL_JOYBUTTONDOWN)
         event_id = e->jbutton.which;
     else if (e->type == SDL_JOYHATMOTION)
@@ -1589,7 +1589,7 @@ static void menu_capture_pad_event(const SDL_Event *e)
     else
         return;
 
-    /* Buscar el mando en el inventario físico, no por jugador. */
+    /* Find the controller in the physical device inventory, not by player. */
     slot = find_device(event_id);
 
     if (slot < 0)
@@ -1661,7 +1661,7 @@ static void menu_update_pad_capture(void)
         return;
     }
 
-    /* Esperar a que todos los mandos conectados estén neutrales. */
+    /* Wait for all connected controllers to return to neutral. */
     for (i = 0; i < MAX_INPUT_DEVICES; i++) {
         SDL_Joystick *j = devices[i].joystick;
 
@@ -1676,20 +1676,20 @@ static void menu_update_pad_capture(void)
 
     if (connected == 0) {
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "CONECTE UN MANDO");
+                 "CONNECT A CONTROLLER");
         return;
     }
 
     if (!all_neutral) {
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "SUELTE EL MANDO");
+                 "RELEASE THE CONTROLLER");
         return;
     }
 
     s_pad_capture_wait_neutral = false;
 
     snprintf(s_menu_status, sizeof s_menu_status,
-             "PULSE MANDO SUPR: AUTO");
+             "PRESS DELETE: AUTO");
 }
 
 static void menu_resolve_pad_conflict(void)
@@ -1798,10 +1798,10 @@ static int menu_item_count(void)
     case MENU_KEYBOARD_P2:
     case MENU_PAD_P1:
     case MENU_PAD_P2:
-        return 12; /* 10 acciones + restaurar + volver */
+        return 12; /* 10 actions + restore + back */
 
     case MENU_KEYBOARD_SYSTEM:
-        return 6;  /* 5 acciones + volver */
+        return 6;  /* 5 actions + back */
 
     default:
         return 0;
@@ -1888,7 +1888,7 @@ static void menu_restore_keyboard_defaults(int player)
 
     if (save_bindings()) {
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "PREDETERMINADOS RESTAURADOS");
+                 "DEFAULTS RESTORED");
     }
 }
 
@@ -1903,7 +1903,7 @@ static void menu_restore_pad_defaults(void)
 
     if (save_bindings()) {
         snprintf(s_menu_status, sizeof s_menu_status,
-                 "PREDETERMINADOS RESTAURADOS");
+                 "DEFAULTS RESTORED");
     }
 }
 
@@ -2063,45 +2063,45 @@ static void menu_draw(void)
     switch (s_menu_screen) {
     case MENU_MAIN:
         title = "MAGICAL DROP III";
-        items[0] = "CONTROLES";
-        items[1] = "GRAFICOS";
-        items[2] = "VOLVER AL JUEGO";
+        items[0] = "CONTROLS";
+        items[1] = "GRAPHICS";
+        items[2] = "RESUME GAME";
         break;
 
     case MENU_CONTROLS:
-        title = "CONTROLES";
-        items[0] = "TECLADO P1";
-        items[1] = "TECLADO P2";
-        items[2] = "MANDO P1";
-        items[3] = "MANDO P2";
-        items[4] = "TECLAS SISTEMA";
-        items[5] = "VOLVER";
+        title = "CONTROLS";
+        items[0] = "KEYBOARD P1";
+        items[1] = "KEYBOARD P2";
+        items[2] = "CONTROLLER P1";
+        items[3] = "CONTROLLER P2";
+        items[4] = "SYSTEM KEYS";
+        items[5] = "BACK";
         break;
 
     case MENU_GRAPHICS:
-        title = "GRAFICOS";
-        items[0] = "CAMBIAR PANTALLA";
-        items[1] = "VOLVER";
+        title = "GRAPHICS";
+        items[0] = "TOGGLE FULLSCREEN";
+        items[1] = "BACK";
         break;
 
     case MENU_KEYBOARD_P1:
-        title = "TECLADO P1";
+        title = "KEYBOARD P1";
         break;
 
     case MENU_KEYBOARD_P2:
-        title = "TECLADO P2";
+        title = "KEYBOARD P2";
         break;
 
     case MENU_KEYBOARD_SYSTEM:
-        title = "TECLAS SISTEMA";
+        title = "SYSTEM KEYS";
         break;
 
     case MENU_PAD_P1:
-        title = "MANDO P1";
+        title = "CONTROLLER P1";
         break;
 
     case MENU_PAD_P2:
-        title = "MANDO P2";
+        title = "CONTROLLER P2";
         break;
 
     default:
@@ -2143,9 +2143,9 @@ static void menu_draw(void)
                     label = "";
                 }
             } else if (menu_is_profile_screen() && i == 10) {
-                label = "RESTAURAR PREDETERMINADOS";
+                label = "RESTORE DEFAULTS";
             } else {
-                label = "VOLVER";
+                label = "BACK";
             }
         } else if (pad_screen) {
             int player = menu_pad_player();
@@ -2163,9 +2163,9 @@ static void menu_draw(void)
 
                 label = action_text;
             } else if (i == 10) {
-                label = "RESTAURAR PREDETERMINADOS";
+                label = "RESTORE DEFAULTS";
             } else {
-                label = "VOLVER";
+                label = "BACK";
             }
         } else {
             label = items[i];
