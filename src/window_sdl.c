@@ -58,6 +58,7 @@ typedef struct {
     SDL_GameController *controller;
     SDL_Joystick *joystick;
     SDL_JoystickID instance_id;
+    char guid[33], serial[128], path[256];
 } input_device_t;
 
 typedef enum {
@@ -97,6 +98,9 @@ static input_device_t devices[MAX_INPUT_DEVICES];
 /* Physical device slot assigned to each player.
    -1 means that the player has no controller assigned. */
 static int player_device[2] = { -1, -1 };
+static char player_device_guid[2][33], player_device_serial[2][128];
+static char player_device_path[2][256];
+static bool s_pad_reassigning = false;
 
 static const char *names[25] = {
     "P1_UP", "P1_DOWN", "P1_LEFT", "P1_RIGHT",
@@ -505,12 +509,15 @@ cleanup:
 
 static void load_bindings(void) {
     FILE *f;
-    char line[256];
+    char line[1024];
     int i, j;
 
     defaults();
     memset(pad_players, 0, sizeof pad_players);
     memset(pad_system, 0, sizeof pad_system);
+    memset(player_device_guid, 0, sizeof player_device_guid);
+    memset(player_device_serial, 0, sizeof player_device_serial);
+    memset(player_device_path, 0, sizeof player_device_path);
 
     f = fopen("controls.cfg", "r");
     if (!f) {
@@ -546,6 +553,24 @@ static void load_bindings(void) {
         end = val + strlen(val);
         while (end > val && isspace((unsigned char)end[-1]))
             *--end = '\0';
+        if (strcmp(key, "PAD_P1_DEVICE_GUID") == 0) {
+            snprintf(player_device_guid[0], sizeof player_device_guid[0], "%s", val); continue;
+        }
+        if (strcmp(key, "PAD_P2_DEVICE_GUID") == 0) {
+            snprintf(player_device_guid[1], sizeof player_device_guid[1], "%s", val); continue;
+        }
+        if (strcmp(key, "PAD_P1_DEVICE_SERIAL") == 0) {
+            snprintf(player_device_serial[0], sizeof player_device_serial[0], "%s", val); continue;
+        }
+        if (strcmp(key, "PAD_P2_DEVICE_SERIAL") == 0) {
+            snprintf(player_device_serial[1], sizeof player_device_serial[1], "%s", val); continue;
+        }
+        if (strcmp(key, "PAD_P1_DEVICE_PATH") == 0) {
+            snprintf(player_device_path[0], sizeof player_device_path[0], "%s", val); continue;
+        }
+        if (strcmp(key, "PAD_P2_DEVICE_PATH") == 0) {
+            snprintf(player_device_path[1], sizeof player_device_path[1], "%s", val); continue;
+        }
         /* Controller bindings are optional. */
         pb = pad_slot(key);
         if (pb) {
@@ -704,6 +729,15 @@ static int save_bindings(void)
             ok = 0;
     }
 
+    if (fprintf(f,
+                "PAD_P1_DEVICE_GUID=%s\nPAD_P1_DEVICE_SERIAL=%s\n"
+                "PAD_P1_DEVICE_PATH=%s\nPAD_P2_DEVICE_GUID=%s\n"
+                "PAD_P2_DEVICE_SERIAL=%s\nPAD_P2_DEVICE_PATH=%s\n",
+                player_device_guid[0], player_device_serial[0],
+                player_device_path[0], player_device_guid[1],
+                player_device_serial[1], player_device_path[1]) < 0)
+        ok = 0;
+
     if (fclose(f) != 0)
         ok = 0;
 
@@ -716,6 +750,56 @@ static int save_bindings(void)
     snprintf(s_menu_status, sizeof s_menu_status,
              "SETTINGS SAVED");
     return 1;
+}
+
+static void read_device_identity(SDL_Joystick *j, input_device_t *d)
+{
+    SDL_JoystickGUID guid;
+    const char *value;
+    d->guid[0] = d->serial[0] = d->path[0] = '\0';
+    if (!j) return;
+    guid = SDL_JoystickGetGUID(j);
+    SDL_JoystickGetGUIDString(guid, d->guid, sizeof d->guid);
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    value = SDL_JoystickGetSerial(j);
+    if (value) snprintf(d->serial, sizeof d->serial, "%s", value);
+#endif
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    value = SDL_JoystickPath(j);
+    if (value) snprintf(d->path, sizeof d->path, "%s", value);
+#endif
+}
+
+static int device_matches_player_identity(int player, const input_device_t *d)
+{
+    int i, count = 0;
+    if (player < 0 || player > 1 || !d ||
+        !player_device_guid[player][0] ||
+        strcmp(player_device_guid[player], d->guid) != 0) return 0;
+    if (player_device_serial[player][0])
+        return d->serial[0] && strcmp(player_device_serial[player], d->serial) == 0;
+    if (player_device_path[player][0])
+        return d->path[0] && strcmp(player_device_path[player], d->path) == 0;
+    for (i = 0; i < MAX_INPUT_DEVICES; i++)
+        if (devices[i].joystick && SDL_JoystickGetAttached(devices[i].joystick) &&
+            strcmp(devices[i].guid, d->guid) == 0) count++;
+    return count == 1;
+}
+
+static int device_assigned_to_other_player(int player, int slot)
+{
+    int other = player == 0 ? 1 : 0;
+    return player_device[other] == slot ||
+           device_matches_player_identity(other, &devices[slot]);
+}
+
+static void assign_device_to_player(int player, int slot)
+{
+    input_device_t *d = &devices[slot];
+    player_device[player] = slot;
+    snprintf(player_device_guid[player], sizeof player_device_guid[player], "%s", d->guid);
+    snprintf(player_device_serial[player], sizeof player_device_serial[player], "%s", d->serial);
+    snprintf(player_device_path[player], sizeof player_device_path[player], "%s", d->path);
 }
 
 static void close_device(int device_slot) {
@@ -742,6 +826,7 @@ static void close_device(int device_slot) {
     d->controller = NULL;
     d->joystick = NULL;
     d->instance_id = -1;
+    d->guid[0] = d->serial[0] = d->path[0] = '\0';
 }
 
 static int find_device(SDL_JoystickID instance_id) {
@@ -776,7 +861,7 @@ static int player_device_index(int player) {
 static int open_device(int device_index) {
     SDL_JoystickID instance_id;
     int slot;
-    int player;
+    int player = -1;
 
     if (device_index < 0 ||
         device_index >= SDL_NumJoysticks()) {
@@ -836,13 +921,13 @@ static int open_device(int device_index) {
         return -1;
     }
 
-    devices[slot].instance_id =
-        SDL_JoystickInstanceID(devices[slot].joystick);
-
-    /* Mantener la asignación automática existente:
-       first available controller -> P1, second available controller -> P2. */
+    devices[slot].instance_id = SDL_JoystickInstanceID(devices[slot].joystick);
+    read_device_identity(devices[slot].joystick, &devices[slot]);
     for (player = 0; player < 2; player++) {
-        if (player_device[player] < 0) {
+        int other = player == 0 ? 1 : 0;
+        if (player_device[player] < 0 && player_device[other] != slot &&
+            !device_assigned_to_other_player(player, slot) &&
+            device_matches_player_identity(player, &devices[slot])) {
             player_device[player] = slot;
             break;
         }
@@ -858,11 +943,8 @@ static int open_device(int device_index) {
                 : " (generic joystick)",
             slot);
 
-    if (player < 2) {
-        fprintf(stderr, ", assigned to P%d\n", player + 1);
-    } else {
-        fprintf(stderr, ", not assigned\n");
-    }
+    if (player < 2) fprintf(stderr, ", restored for P%d\n", player + 1);
+    else fprintf(stderr, ", not assigned\n");
 
     return slot;
 }
@@ -1518,6 +1600,7 @@ static void menu_cancel_pad_capture(void)
     s_pad_capture_wait_neutral = true;
     s_pad_capture_player = -1;
     s_pad_capture_action = -1;
+    s_pad_reassigning = false;
     s_pad_conflict_action = -1;
     snprintf(s_menu_status, sizeof s_menu_status, "CANCELLED");
 }
@@ -1531,12 +1614,26 @@ static void menu_start_pad_capture(int action)
 
     s_pad_capture_player = player;
     s_pad_capture_action = action;
+    s_pad_reassigning = false;
     s_pad_conflict_action = -1;
     s_pad_capturing = true;
     s_pad_capture_wait_neutral = true;
 
     snprintf(s_menu_status, sizeof s_menu_status,
-             "CONNECT OR RELEASE THE CONTROLLER");
+             player_device_index(player) < 0 ? "CONNECT A CONTROLLER" : "RELEASE THE CONTROLLER");
+}
+
+static void menu_start_pad_reassignment(void)
+{
+    int player = menu_pad_player();
+    if (player < 0 || player > 1) return;
+    s_pad_capture_player = player;
+    s_pad_capture_action = -1;
+    s_pad_reassigning = true;
+    s_pad_conflict_action = -1;
+    s_pad_capturing = true;
+    s_pad_capture_wait_neutral = true;
+    snprintf(s_menu_status, sizeof s_menu_status, "CONNECT OR RELEASE THE CONTROLLER");
 }
 
 static void menu_finish_pad_capture(const pad_binding_t *binding)
@@ -1591,15 +1688,28 @@ static void menu_capture_pad_event(const SDL_Event *e)
 
     /* Find the controller in the physical device inventory, not by player. */
     slot = find_device(event_id);
-
-    if (slot < 0)
+    if (slot < 0) return;
+    if (device_assigned_to_other_player(s_pad_capture_player, slot)) {
+        snprintf(s_menu_status, sizeof s_menu_status, "CONTROLLER ALREADY ASSIGNED");
         return;
-
+    }
+    if (s_pad_reassigning || player_device[s_pad_capture_player] < 0) {
+        assign_device_to_player(s_pad_capture_player, slot);
+        save_bindings();
+    } else if (player_device[s_pad_capture_player] != slot) return;
     j = devices[slot].joystick;
 
     if (!j || !SDL_JoystickGetAttached(j))
         return;
-
+    if (s_pad_reassigning) {
+        s_pad_reassigning = false;
+        s_pad_capturing = false;
+        s_pad_capture_wait_neutral = true;
+        s_pad_capture_player = s_pad_capture_action = -1;
+        snprintf(s_menu_status, sizeof s_menu_status, "CONTROLLER ASSIGNED");
+        save_bindings();
+        return;
+    }
     binding.type = PAD_NONE;
     binding.index = 0;
     binding.direction = 0;
@@ -1689,7 +1799,7 @@ static void menu_update_pad_capture(void)
     s_pad_capture_wait_neutral = false;
 
     snprintf(s_menu_status, sizeof s_menu_status,
-             "PRESS DELETE: AUTO");
+             s_pad_reassigning ? "PRESS A BUTTON ON NEW CONTROLLER" : "PRESS DELETE: AUTO");
 }
 
 static void menu_resolve_pad_conflict(void)
@@ -1714,6 +1824,7 @@ static void menu_resolve_pad_conflict(void)
     s_pad_capture_wait_neutral = true;
     s_pad_capture_player = -1;
     s_pad_capture_action = -1;
+    s_pad_reassigning = false;
     s_pad_conflict_action = -1;
     save_bindings();
 }
@@ -1796,12 +1907,12 @@ static int menu_item_count(void)
 
     case MENU_KEYBOARD_P1:
     case MENU_KEYBOARD_P2:
-    case MENU_PAD_P1:
-    case MENU_PAD_P2:
         return 12; /* 10 actions + restore + back */
-
     case MENU_KEYBOARD_SYSTEM:
         return 6;  /* 5 actions + back */
+    case MENU_PAD_P1:
+    case MENU_PAD_P2:
+        return 13; /* 10 actions + change controller + restore + back */
 
     default:
         return 0;
@@ -1990,6 +2101,8 @@ static void menu_activate(void)
         if (s_menu_selection < 10) {
             menu_start_pad_capture(s_menu_selection);
         } else if (s_menu_selection == 10) {
+            menu_start_pad_reassignment();
+        } else if (s_menu_selection == 11) {
             menu_restore_pad_defaults();
         } else {
             menu_back();
@@ -2029,7 +2142,7 @@ static void menu_draw(void)
                   pad_screen ? 260 :
                   controls_screen ? 230 : 200;
     int panel_h = keyboard_screen ? 210 :
-                  pad_screen ? 210 :
+                  pad_screen ? 230 :
                   controls_screen ? 190 : 140;
 
     SDL_Rect panel = {
@@ -2163,6 +2276,8 @@ static void menu_draw(void)
 
                 label = action_text;
             } else if (i == 10) {
+                label = "CHANGE CONTROLLER";
+            } else if (i == 11) {
                 label = "RESTORE DEFAULTS";
             } else {
                 label = "BACK";
@@ -2220,10 +2335,9 @@ static bool menu_run(const uint32_t *fb) {
                 SDL_Scancode sc = e.key.keysym.scancode;
 
                 if (s_pad_capturing) {
-                    if (sc == SDL_SCANCODE_ESCAPE) {
-                        menu_cancel_pad_capture();
-                    } else if (sc == SDL_SCANCODE_DELETE ||
-                               sc == SDL_SCANCODE_BACKSPACE) {
+                    if (sc == SDL_SCANCODE_ESCAPE) menu_cancel_pad_capture();
+                    else if (!s_pad_reassigning &&
+                             (sc == SDL_SCANCODE_DELETE || sc == SDL_SCANCODE_BACKSPACE)) {
                         pad_binding_t automatic = { PAD_NONE, 0, 0 };
                         menu_finish_pad_capture(&automatic);
                     }
@@ -2344,7 +2458,7 @@ static bool menu_run(const uint32_t *fb) {
                 int pad_screen = menu_is_pad_screen();
                 int controls_screen = s_menu_screen == MENU_CONTROLS;
                 int panel_h = keyboard_screen ? 210 :
-                              pad_screen ? 210 :
+                              pad_screen ? 230 :
                               controls_screen ? 190 : 140;
                 int panel_y = NG_SCREEN_H / 2 - panel_h / 2;
                 int first_y = menu_first_item_y(panel_y);
