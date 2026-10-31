@@ -1697,7 +1697,7 @@ static int menu_find_key_conflict(
 {
     int i;
 
-    for (i = 0; i < 25; i++) {
+    for (i = 0; i < 27; i++) {
         SDL_Scancode *key = slot(names[i]);
 
         if (i != except_action &&
