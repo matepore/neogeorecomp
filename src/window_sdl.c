@@ -14,6 +14,11 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <time.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #define MAX_INPUT_DEVICES 8
 #define AXIS_DEADZONE 8000
@@ -2980,9 +2985,11 @@ static int save_screenshot(void)
         return -1;
     }
 
-    if (SDL_mkdir("screenshots") != 0) {
-        /* An existing directory is expected; write_png reports real failures. */
-    }
+#ifdef _WIN32
+    (void)_mkdir("screenshots");
+#else
+    (void)mkdir("screenshots", 0777);
+#endif
 
     now = time(NULL);
     local = localtime(&now);
