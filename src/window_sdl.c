@@ -1401,6 +1401,8 @@ static void graphics_change(int option, int direction)
         s_vsync = !s_vsync;
         if (!graphics_set_vsync()) {
             s_vsync = previous;
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "VSYNC CHANGE FAILED");
             return;
         }
     } else if (option == 4) {
@@ -1416,6 +1418,8 @@ static void graphics_change(int option, int direction)
         if (!graphics_set_filter()) {
             s_graphics_filter = previous;
             (void)graphics_set_filter();
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "FILTER CHANGE FAILED");
             return;
         }
     } else {
@@ -1424,6 +1428,8 @@ static void graphics_change(int option, int direction)
 
     graphics_apply(true);
     graphics_save();
+    snprintf(s_menu_status, sizeof s_menu_status,
+             "GRAPHICS UPDATED");
 }
 
 int window_open(const char *title, int scale) {
