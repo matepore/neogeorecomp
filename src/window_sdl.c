@@ -2389,7 +2389,7 @@ static void menu_activate(void)
         } else if (s_menu_selection == 10) {
             s_menu_confirm_restore = true;
             snprintf(s_menu_status, sizeof s_menu_status,
-                     "RESTORE: ENTER OR A YES ESC OR B NO");
+                     "ENTER OR A YES - ESC OR PAD B NO");
         } else {
             menu_back();
         }
@@ -2412,7 +2412,7 @@ static void menu_activate(void)
         } else if (s_menu_selection == 11) {
             s_menu_confirm_restore = true;
             snprintf(s_menu_status, sizeof s_menu_status,
-                     "RESTORE: ENTER OR A YES ESC OR B NO");
+                     "ENTER OR A YES - ESC OR PAD B NO");
         } else {
             menu_back();
         }
@@ -2427,11 +2427,12 @@ static void menu_horizontal(int direction)
 }
 
 static void menu_move(int direction) {
+    int count = menu_item_count();
+
     if (s_menu_confirm_restore) {
         s_menu_confirm_restore = false;
         s_menu_status[0] = '\0';
     }
-    int count = menu_item_count();
 
     if (count <= 0)
         return;
