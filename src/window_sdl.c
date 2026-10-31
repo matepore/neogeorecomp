@@ -26,6 +26,8 @@ static SDL_AudioDeviceID s_audio;
 static bool s_menu_open = false;
 static bool s_game_paused = false;
 static bool s_screenshot_pending = false;
+
+static int save_screenshot(void);
 static int s_menu_selection = 0;
 
 typedef enum {
@@ -2999,9 +3001,17 @@ static int save_screenshot(void)
     else
         snprintf(timestamp, sizeof timestamp, "%u", SDL_GetTicks());
 
-    ++sequence;
-    snprintf(path, sizeof path, "screenshots/magdrop3_%s_%u_%u.png",
-             timestamp, SDL_GetTicks(), sequence);
+    do {
+        SDL_RWops *existing;
+        ++sequence;
+        snprintf(path, sizeof path,
+                 "screenshots/magdrop3_%s_%u_%u.png",
+                 timestamp, SDL_GetTicks(), sequence);
+        existing = SDL_RWFromFile(path, "rb");
+        if (!existing)
+            break;
+        SDL_RWclose(existing);
+    } while (sequence != 0);
 
     if (write_png(path, pixels, width, height) != 0) {
         fprintf(stderr, "[screenshot] cannot write %s\n", path);
@@ -3084,6 +3094,13 @@ static bool pause_run(const uint32_t *fb)
             graphics_game_rect(&game_rect);
             SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
             graphics_draw_scanlines(&game_rect);
+        }
+
+        {
+            SDL_Color paused_color = { 90, 220, 255, 255 };
+            menu_draw_text(s_canvas_w / 2 - 36,
+                           s_canvas_h / 2 - 8,
+                           "PAUSED", 2, paused_color);
         }
 
         if (s_screenshot_pending) {
