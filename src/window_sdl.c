@@ -33,6 +33,7 @@ typedef enum {
 static int s_window_scale = 2;
 static graphics_aspect_t s_graphics_aspect = GRAPHICS_ORIGINAL;
 static bool s_fullscreen = false;
+static bool s_vsync = false;
 static int s_canvas_w = NG_SCREEN_W;
 static int s_canvas_h = NG_SCREEN_H;
 
@@ -1234,6 +1235,7 @@ static void graphics_save(void)
             s_graphics_aspect == GRAPHICS_4_3 ? "4:3" :
             s_graphics_aspect == GRAPHICS_16_9 ? "16:9" : "ORIGINAL");
     fprintf(f, "FULLSCREEN=%s\n", s_fullscreen ? "ON" : "OFF");
+    fprintf(f, "VSYNC=%s\n", s_vsync ? "ON" : "OFF");
     fclose(f);
 }
 
@@ -1246,6 +1248,7 @@ static void graphics_load(int fallback_scale)
                      fallback_scale > 5 ? 5 : fallback_scale;
     s_graphics_aspect = GRAPHICS_ORIGINAL;
     s_fullscreen = false;
+    s_vsync = false;
 
     f = fopen("graphics.cfg", "r");
     if (!f)
@@ -1271,10 +1274,26 @@ static void graphics_load(int fallback_scale)
                 s_graphics_aspect = GRAPHICS_ORIGINAL;
         } else if (strcmp(key, "FULLSCREEN") == 0) {
             s_fullscreen = strcmp(value, "ON") == 0;
+        } else if (strcmp(key, "VSYNC") == 0) {
+            s_vsync = strcmp(value, "ON") == 0;
         }
     }
 
     fclose(f);
+}
+
+static bool graphics_set_vsync(void)
+{
+    if (!s_ren)
+        return true;
+
+    if (SDL_RenderSetVSync(s_ren, s_vsync ? 1 : 0) != 0) {
+        fprintf(stderr, "[graphics] cannot set VSync to %s: %s\n",
+                s_vsync ? "ON" : "OFF", SDL_GetError());
+        return false;
+    }
+
+    return true;
 }
 
 static void graphics_apply(bool resize_window)
@@ -1323,6 +1342,13 @@ static void graphics_change(int option, int direction)
         s_graphics_aspect = (graphics_aspect_t)aspect;
     } else if (option == 2) {
         s_fullscreen = !s_fullscreen;
+    } else if (option == 3) {
+        bool previous = s_vsync;
+        s_vsync = !s_vsync;
+        if (!graphics_set_vsync()) {
+            s_vsync = previous;
+            return;
+        }
     } else {
         return;
     }
@@ -1392,6 +1418,12 @@ int window_open(const char *title, int scale) {
         s_win = NULL;
         SDL_Quit();
         return -1;
+    }
+
+    if (!graphics_set_vsync()) {
+        /* Keep startup usable when the renderer does not support VSync. */
+        s_vsync = false;
+        (void)SDL_RenderSetVSync(s_ren, 0);
     }
 
     graphics_apply(false);
@@ -2084,7 +2116,7 @@ static int menu_item_count(void)
         return 6;
 
     case MENU_GRAPHICS:
-        return 4;
+        return 5;
 
     case MENU_KEYBOARD_P1:
     case MENU_KEYBOARD_P2:
@@ -2250,7 +2282,7 @@ static void menu_activate(void)
         break;
 
     case MENU_GRAPHICS:
-        if (s_menu_selection < 3) {
+        if (s_menu_selection < 4) {
             graphics_change(s_menu_selection, 1);
         } else {
             menu_back();
@@ -2325,7 +2357,7 @@ static void menu_draw(void)
     int panel_h = keyboard_screen ? 210 :
                   pad_screen ? 230 :
                   controls_screen ? 190 :
-                  s_menu_screen == MENU_GRAPHICS ? 160 : 140;
+                  s_menu_screen == MENU_GRAPHICS ? 180 : 140;
 
     SDL_Rect panel = {
         s_canvas_w / 2 - panel_w / 2,
@@ -2386,7 +2418,8 @@ static void menu_draw(void)
         items[0] = graphics_size;
         items[1] = graphics_aspect;
         items[2] = s_fullscreen ? "FULLSCREEN: ON" : "FULLSCREEN: OFF";
-        items[3] = "BACK";
+        items[3] = s_vsync ? "VSYNC: ON" : "VSYNC: OFF";
+        items[4] = "BACK";
         break;
 
     case MENU_KEYBOARD_P1:
@@ -2670,7 +2703,7 @@ static bool menu_run(const uint32_t *fb) {
                 int panel_h = keyboard_screen ? 210 :
                               pad_screen ? 230 :
                               controls_screen ? 190 :
-                              s_menu_screen == MENU_GRAPHICS ? 160 : 140;
+                              s_menu_screen == MENU_GRAPHICS ? 180 : 140;
                 int panel_y = s_canvas_h / 2 - panel_h / 2;
                 int first_y = menu_first_item_y(panel_y);
                 int row_step = menu_is_profile_screen() ? 13 :
