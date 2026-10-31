@@ -25,6 +25,27 @@ static bool s_menu_open = false;
 static int s_menu_selection = 0;
 
 typedef enum {
+    GRAPHICS_ORIGINAL = 0,
+    GRAPHICS_4_3,
+    GRAPHICS_16_9
+} graphics_aspect_t;
+
+static int s_window_scale = 2;
+static graphics_aspect_t s_graphics_aspect = GRAPHICS_ORIGINAL;
+static bool s_fullscreen = false;
+static bool s_vsync = false;
+
+typedef enum {
+    GRAPHICS_FILTER_NEAREST = 0,
+    GRAPHICS_FILTER_BILINEAR,
+    GRAPHICS_FILTER_SCANLINES
+} graphics_filter_t;
+
+static graphics_filter_t s_graphics_filter = GRAPHICS_FILTER_NEAREST;
+static int s_canvas_w = NG_SCREEN_W;
+static int s_canvas_h = NG_SCREEN_H;
+
+typedef enum {
     MENU_MAIN = 0,
     MENU_CONTROLS,
     MENU_GRAPHICS,
@@ -44,6 +65,7 @@ static SDL_Scancode s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
 static int s_conflict_action = -1;
 
 static char s_menu_status[64] = "";
+static bool s_menu_confirm_restore = false;
 
 
 /* ponytail: a fixed layout; remapping belongs to the frontend (ROADMAP.md) */
@@ -1175,6 +1197,241 @@ static void read_controller(int player, ng_input_t *in) {
     }
 }
 
+static void graphics_canvas_size(int *w, int *h)
+{
+    switch (s_graphics_aspect) {
+    case GRAPHICS_4_3:
+        *w = 320;
+        *h = 240;
+        break;
+    case GRAPHICS_16_9:
+        *w = 448;
+        *h = 252;
+        break;
+    case GRAPHICS_ORIGINAL:
+    default:
+        *w = NG_SCREEN_W;
+        *h = NG_SCREEN_H;
+        break;
+    }
+}
+
+static void graphics_game_rect(SDL_Rect *rect)
+{
+    if (s_graphics_aspect == GRAPHICS_16_9) {
+        rect->x = (s_canvas_w - 336) / 2;
+        rect->y = 0;
+        rect->w = 336;
+        rect->h = 252;
+    } else {
+        rect->x = 0;
+        rect->y = 0;
+        rect->w = s_canvas_w;
+        rect->h = s_canvas_h;
+    }
+}
+
+static void graphics_draw_scanlines(const SDL_Rect *game_rect)
+{
+    int y;
+
+    if (s_graphics_filter != GRAPHICS_FILTER_SCANLINES)
+        return;
+
+    SDL_SetRenderDrawBlendMode(s_ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 64);
+
+    for (y = game_rect->y + 1; y < game_rect->y + game_rect->h; y += 2) {
+        SDL_Rect line = { game_rect->x, y, game_rect->w, 1 };
+        SDL_RenderFillRect(s_ren, &line);
+    }
+
+    SDL_SetRenderDrawBlendMode(s_ren, SDL_BLENDMODE_NONE);
+}
+
+static void graphics_save(void)
+{
+    FILE *f = fopen("graphics.cfg", "w");
+    if (!f) {
+        fprintf(stderr, "[graphics] cannot write graphics.cfg\n");
+        return;
+    }
+
+    fprintf(f, "WINDOW_SIZE=%dX\n", s_window_scale);
+    fprintf(f, "ASPECT_RATIO=%s\n",
+            s_graphics_aspect == GRAPHICS_4_3 ? "4:3" :
+            s_graphics_aspect == GRAPHICS_16_9 ? "16:9" : "ORIGINAL");
+    fprintf(f, "FULLSCREEN=%s\n", s_fullscreen ? "ON" : "OFF");
+    fprintf(f, "VSYNC=%s\n", s_vsync ? "ON" : "OFF");
+    fprintf(f, "FILTER=%s\n",
+            s_graphics_filter == GRAPHICS_FILTER_BILINEAR ? "BILINEAR" :
+            s_graphics_filter == GRAPHICS_FILTER_SCANLINES ? "SCANLINES" : "NEAREST");
+    fclose(f);
+}
+
+static void graphics_load(int fallback_scale)
+{
+    FILE *f;
+    char line[128];
+
+    s_window_scale = fallback_scale < 2 ? 2 :
+                     fallback_scale > 5 ? 5 : fallback_scale;
+    s_graphics_aspect = GRAPHICS_ORIGINAL;
+    s_fullscreen = false;
+    s_vsync = false;
+    s_graphics_filter = GRAPHICS_FILTER_NEAREST;
+
+    f = fopen("graphics.cfg", "r");
+    if (!f)
+        return;
+
+    while (fgets(line, sizeof line, f)) {
+        char key[64], value[64];
+
+        if (sscanf(line, " %63[^=]=%63s", key, value) != 2)
+            continue;
+
+        if (strcmp(key, "WINDOW_SIZE") == 0) {
+            int parsed = 0;
+            if (sscanf(value, "%dX", &parsed) == 1 &&
+                parsed >= 2 && parsed <= 5)
+                s_window_scale = parsed;
+        } else if (strcmp(key, "ASPECT_RATIO") == 0) {
+            if (strcmp(value, "4:3") == 0)
+                s_graphics_aspect = GRAPHICS_4_3;
+            else if (strcmp(value, "16:9") == 0)
+                s_graphics_aspect = GRAPHICS_16_9;
+            else
+                s_graphics_aspect = GRAPHICS_ORIGINAL;
+        } else if (strcmp(key, "FULLSCREEN") == 0) {
+            s_fullscreen = strcmp(value, "ON") == 0;
+        } else if (strcmp(key, "VSYNC") == 0) {
+            s_vsync = strcmp(value, "ON") == 0;
+        } else if (strcmp(key, "FILTER") == 0) {
+            if (strcmp(value, "BILINEAR") == 0)
+                s_graphics_filter = GRAPHICS_FILTER_BILINEAR;
+            else if (strcmp(value, "SCANLINES") == 0)
+                s_graphics_filter = GRAPHICS_FILTER_SCANLINES;
+            else
+                s_graphics_filter = GRAPHICS_FILTER_NEAREST;
+        }
+    }
+
+    fclose(f);
+}
+
+static bool graphics_set_vsync(void)
+{
+    if (!s_ren)
+        return true;
+
+    if (SDL_RenderSetVSync(s_ren, s_vsync ? 1 : 0) != 0) {
+        fprintf(stderr, "[graphics] cannot set VSync to %s: %s\n",
+                s_vsync ? "ON" : "OFF", SDL_GetError());
+        return false;
+    }
+
+    return true;
+}
+
+static bool graphics_set_filter(void)
+{
+    SDL_ScaleMode mode = s_graphics_filter == GRAPHICS_FILTER_BILINEAR
+        ? SDL_ScaleModeLinear : SDL_ScaleModeNearest;
+
+    if (!s_tex)
+        return true;
+
+    if (SDL_SetTextureScaleMode(s_tex, mode) != 0) {
+        fprintf(stderr, "[graphics] cannot set filter: %s\n", SDL_GetError());
+        return false;
+    }
+
+    return true;
+}
+
+static void graphics_apply(bool resize_window)
+{
+    Uint32 flags;
+    int width, height;
+
+    graphics_canvas_size(&s_canvas_w, &s_canvas_h);
+
+    if (s_ren)
+        SDL_RenderSetLogicalSize(s_ren, s_canvas_w, s_canvas_h);
+
+    if (!s_win)
+        return;
+
+    flags = SDL_GetWindowFlags(s_win);
+    if (s_fullscreen) {
+        if (!(flags & SDL_WINDOW_FULLSCREEN_DESKTOP) &&
+            SDL_SetWindowFullscreen(s_win, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+            fprintf(stderr, "[graphics] fullscreen: %s\n", SDL_GetError());
+    } else {
+        if (flags & SDL_WINDOW_FULLSCREEN) {
+            if (SDL_SetWindowFullscreen(s_win, 0) != 0)
+                fprintf(stderr, "[graphics] windowed mode: %s\n", SDL_GetError());
+        }
+        if (resize_window) {
+            width = s_canvas_w * s_window_scale;
+            height = s_canvas_h * s_window_scale;
+            SDL_SetWindowSize(s_win, width, height);
+            SDL_SetWindowPosition(s_win, SDL_WINDOWPOS_CENTERED,
+                                  SDL_WINDOWPOS_CENTERED);
+        }
+    }
+}
+
+static void graphics_change(int option, int direction)
+{
+    if (option == 0) {
+        s_window_scale += direction;
+        if (s_window_scale < 2) s_window_scale = 5;
+        if (s_window_scale > 5) s_window_scale = 2;
+    } else if (option == 1) {
+        int aspect = (int)s_graphics_aspect + direction;
+        if (aspect < GRAPHICS_ORIGINAL) aspect = GRAPHICS_16_9;
+        if (aspect > GRAPHICS_16_9) aspect = GRAPHICS_ORIGINAL;
+        s_graphics_aspect = (graphics_aspect_t)aspect;
+    } else if (option == 2) {
+        s_fullscreen = !s_fullscreen;
+    } else if (option == 3) {
+        bool previous = s_vsync;
+        s_vsync = !s_vsync;
+        if (!graphics_set_vsync()) {
+            s_vsync = previous;
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "VSYNC CHANGE FAILED");
+            return;
+        }
+    } else if (option == 4) {
+        graphics_filter_t previous = s_graphics_filter;
+        int filter = (int)s_graphics_filter + direction;
+
+        if (filter < GRAPHICS_FILTER_NEAREST)
+            filter = GRAPHICS_FILTER_SCANLINES;
+        if (filter > GRAPHICS_FILTER_SCANLINES)
+            filter = GRAPHICS_FILTER_NEAREST;
+
+        s_graphics_filter = (graphics_filter_t)filter;
+        if (!graphics_set_filter()) {
+            s_graphics_filter = previous;
+            (void)graphics_set_filter();
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "FILTER CHANGE FAILED");
+            return;
+        }
+    } else {
+        return;
+    }
+
+    graphics_apply(true);
+    graphics_save();
+    snprintf(s_menu_status, sizeof s_menu_status,
+             "GRAPHICS UPDATED");
+}
+
 int window_open(const char *title, int scale) {
     int i;
 
@@ -1198,11 +1455,13 @@ int window_open(const char *title, int scale) {
     SDL_GameControllerEventState(SDL_ENABLE);
 
     load_bindings();
+    graphics_load(scale);
+    graphics_canvas_size(&s_canvas_w, &s_canvas_h);
 
     s_win = SDL_CreateWindow(
         title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        NG_SCREEN_W * scale, NG_SCREEN_H * scale,
-        SDL_WINDOW_RESIZABLE);
+        s_canvas_w * s_window_scale, s_canvas_h * s_window_scale,
+        0);
 
     if (!s_win) {
         fprintf(stderr, "error: SDL_CreateWindow: %s\n", SDL_GetError());
@@ -1221,7 +1480,7 @@ int window_open(const char *title, int scale) {
         return -1;
     }
 
-    SDL_RenderSetLogicalSize(s_ren, NG_SCREEN_W, NG_SCREEN_H);
+    SDL_RenderSetLogicalSize(s_ren, s_canvas_w, s_canvas_h);
 
     s_tex = SDL_CreateTexture(
         s_ren, SDL_PIXELFORMAT_ARGB8888,
@@ -1235,6 +1494,20 @@ int window_open(const char *title, int scale) {
         SDL_Quit();
         return -1;
     }
+
+    if (!graphics_set_vsync()) {
+        /* Keep startup usable when the renderer does not support VSync. */
+        s_vsync = false;
+        (void)SDL_RenderSetVSync(s_ren, 0);
+    }
+
+    if (!graphics_set_filter()) {
+        s_graphics_filter = GRAPHICS_FILTER_NEAREST;
+        (void)graphics_set_filter();
+    }
+
+    graphics_apply(false);
+    graphics_save();
 
     /* Pick up controllers already connected before the game launched. */
     for (i = 0; i < SDL_NumJoysticks(); i++)
@@ -1314,23 +1587,11 @@ static void read_keys(ng_input_t *in) {
     (void)i;
 }
 
-static void menu_toggle_fullscreen(void) {
-    Uint32 flags;
-    bool fullscreen;
-
-    if (!s_win)
-        return;
-
-    flags = SDL_GetWindowFlags(s_win);
-    fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
-
-    if (SDL_SetWindowFullscreen(
-            s_win,
-            fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
-        fprintf(stderr,
-                "Failed to change display mode: %s\n",
-                SDL_GetError());
-    }
+static void menu_toggle_fullscreen(void)
+{
+    s_fullscreen = !s_fullscreen;
+    graphics_apply(true);
+    graphics_save();
 }
 
 static const char *keyboard_labels[25] = {
@@ -1935,7 +2196,7 @@ static int menu_item_count(void)
         return 6;
 
     case MENU_GRAPHICS:
-        return 2;
+        return 6;
 
     case MENU_KEYBOARD_P1:
     case MENU_KEYBOARD_P2:
@@ -1973,6 +2234,12 @@ static void menu_back(void)
             menu_cancel_pad_capture();
         else
             menu_cancel_capture();
+        return;
+    }
+
+    if (s_menu_confirm_restore) {
+        s_menu_confirm_restore = false;
+        snprintf(s_menu_status, sizeof s_menu_status, "CANCELLED");
         return;
     }
 
@@ -2052,6 +2319,19 @@ static void menu_restore_pad_defaults(void)
 
 static void menu_activate(void)
 {
+    if (s_menu_confirm_restore) {
+        s_menu_confirm_restore = false;
+        if (s_menu_screen == MENU_KEYBOARD_P1 ||
+            s_menu_screen == MENU_KEYBOARD_P2) {
+            menu_restore_keyboard_defaults(
+                s_menu_screen == MENU_KEYBOARD_P1 ? 0 : 1);
+        } else if (s_menu_screen == MENU_PAD_P1 ||
+                   s_menu_screen == MENU_PAD_P2) {
+            menu_restore_pad_defaults();
+        }
+        return;
+    }
+
     if (s_menu_capturing || s_pad_capturing)
         return;
 
@@ -2101,8 +2381,8 @@ static void menu_activate(void)
         break;
 
     case MENU_GRAPHICS:
-        if (s_menu_selection == 0) {
-            menu_toggle_fullscreen();
+        if (s_menu_selection < 5) {
+            graphics_change(s_menu_selection, 1);
         } else {
             menu_back();
         }
@@ -2113,8 +2393,9 @@ static void menu_activate(void)
         if (s_menu_selection < 10) {
             menu_start_capture(menu_keyboard_action_index());
         } else if (s_menu_selection == 10) {
-            menu_restore_keyboard_defaults(
-                s_menu_screen == MENU_KEYBOARD_P1 ? 0 : 1);
+            s_menu_confirm_restore = true;
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "ENTER OR A YES - ESC OR PAD B NO");
         } else {
             menu_back();
         }
@@ -2135,7 +2416,9 @@ static void menu_activate(void)
         } else if (s_menu_selection == 10) {
             menu_start_pad_reassignment();
         } else if (s_menu_selection == 11) {
-            menu_restore_pad_defaults();
+            s_menu_confirm_restore = true;
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "ENTER OR A YES - ESC OR PAD B NO");
         } else {
             menu_back();
         }
@@ -2143,8 +2426,19 @@ static void menu_activate(void)
     }
 }
 
+static void menu_horizontal(int direction)
+{
+    if (s_menu_screen == MENU_GRAPHICS)
+        graphics_change(s_menu_selection, direction);
+}
+
 static void menu_move(int direction) {
     int count = menu_item_count();
+
+    if (s_menu_confirm_restore) {
+        s_menu_confirm_restore = false;
+        s_menu_status[0] = '\0';
+    }
 
     if (count <= 0)
         return;
@@ -2172,14 +2466,15 @@ static void menu_draw(void)
     int controls_screen = s_menu_screen == MENU_CONTROLS;
     int panel_w = keyboard_screen ? 240 :
                   pad_screen ? 260 :
-                  controls_screen ? 230 : 200;
+                  controls_screen ? 230 : 220;
     int panel_h = keyboard_screen ? 210 :
                   pad_screen ? 230 :
-                  controls_screen ? 190 : 140;
+                  controls_screen ? 190 :
+                  s_menu_screen == MENU_GRAPHICS ? 210 : 140;
 
     SDL_Rect panel = {
-        NG_SCREEN_W / 2 - panel_w / 2,
-        NG_SCREEN_H / 2 - panel_h / 2,
+        s_canvas_w / 2 - panel_w / 2,
+        s_canvas_h / 2 - panel_h / 2,
         panel_w, panel_h
     };
 
@@ -2189,6 +2484,9 @@ static void menu_draw(void)
 
     const char *title = "";
     const char *items[9] = { "", "", "", "", "", "", "", "", "" };
+    char graphics_size[32];
+    char graphics_aspect[40];
+    char graphics_filter[40];
 
     int count;
     int first_y;
@@ -2225,8 +2523,22 @@ static void menu_draw(void)
 
     case MENU_GRAPHICS:
         title = "GRAPHICS";
-        items[0] = "TOGGLE FULLSCREEN";
-        items[1] = "BACK";
+        snprintf(graphics_size, sizeof graphics_size,
+                 "WINDOW SIZE: %dX", s_window_scale);
+        snprintf(graphics_aspect, sizeof graphics_aspect,
+                 "ASPECT RATIO: %s",
+                 s_graphics_aspect == GRAPHICS_4_3 ? "4:3" :
+                 s_graphics_aspect == GRAPHICS_16_9 ? "16:9" : "ORIGINAL");
+        items[0] = graphics_size;
+        items[1] = graphics_aspect;
+        items[2] = s_fullscreen ? "FULLSCREEN: ON" : "FULLSCREEN: OFF";
+        items[3] = s_vsync ? "VSYNC: ON" : "VSYNC: OFF";
+        snprintf(graphics_filter, sizeof graphics_filter,
+                 "FILTER: %s",
+                 s_graphics_filter == GRAPHICS_FILTER_BILINEAR ? "BILINEAR" :
+                 s_graphics_filter == GRAPHICS_FILTER_SCANLINES ? "SCANLINES" : "NEAREST");
+        items[4] = graphics_filter;
+        items[5] = "BACK";
         break;
 
     case MENU_KEYBOARD_P1:
@@ -2255,6 +2567,10 @@ static void menu_draw(void)
 
     menu_draw_text(panel.x + 12, panel.y + 8,
                    title, 2, white);
+
+    SDL_SetRenderDrawColor(s_ren, 70, 110, 145, 180);
+    SDL_RenderDrawLine(s_ren, panel.x + 10, panel.y + 25,
+                       panel.x + panel.w - 10, panel.y + 25);
 
     count = menu_item_count();
     first_y = menu_first_item_y(panel.y);
@@ -2324,18 +2640,18 @@ static void menu_draw(void)
         option.h = menu_is_profile_screen() ? 12 :
            keyboard_screen ? 15 : 18;
 
-        text_color = s_menu_selection == i ? white : muted;
+        text_color = s_menu_selection == i ? cyan : muted;
 
         if (s_menu_selection == i) {
             SDL_Rect marker = {
-                option.x + 3, option.y + 5, 4, 4
+                option.x + 2, option.y + 2, 3, option.h - 4
             };
 
-            SDL_SetRenderDrawColor(s_ren, 40, 100, 145, 255);
+            SDL_SetRenderDrawColor(s_ren, 28, 75, 110, 255);
             SDL_RenderFillRect(s_ren, &option);
-
             SDL_SetRenderDrawColor(s_ren, cyan.r, cyan.g,
                                    cyan.b, cyan.a);
+            SDL_RenderDrawRect(s_ren, &option);
             SDL_RenderFillRect(s_ren, &marker);
         }
 
@@ -2409,6 +2725,8 @@ static bool menu_run(const uint32_t *fb) {
                 }
 
                 if (sc == b.overlay_toggle) {
+                    s_menu_confirm_restore = false;
+                    s_menu_status[0] = '\0';
                     s_menu_open = false;
                     break;
                 }
@@ -2422,6 +2740,10 @@ static bool menu_run(const uint32_t *fb) {
                     menu_move(-1);
                 } else if (sc == SDL_SCANCODE_DOWN) {
                     menu_move(1);
+                } else if (sc == SDL_SCANCODE_LEFT) {
+                    menu_horizontal(-1);
+                } else if (sc == SDL_SCANCODE_RIGHT) {
+                    menu_horizontal(1);
                 } else if (sc == SDL_SCANCODE_RETURN ||
                            sc == SDL_SCANCODE_SPACE) {
                     menu_activate();
@@ -2448,6 +2770,10 @@ static bool menu_run(const uint32_t *fb) {
                     menu_move(-1);
                 } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
                     menu_move(1);
+                } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+                    menu_horizontal(-1);
+                } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                    menu_horizontal(1);
                 } else if (button == SDL_CONTROLLER_BUTTON_A ||
                            button == SDL_CONTROLLER_BUTTON_START) {
                     menu_activate();
@@ -2465,6 +2791,10 @@ static bool menu_run(const uint32_t *fb) {
                         menu_move(-1);
                     else if (e.jhat.value & SDL_HAT_DOWN)
                         menu_move(1);
+                    else if (e.jhat.value & SDL_HAT_LEFT)
+                        menu_horizontal(-1);
+                    else if (e.jhat.value & SDL_HAT_RIGHT)
+                        menu_horizontal(1);
                 }
             }
 
@@ -2491,19 +2821,20 @@ static bool menu_run(const uint32_t *fb) {
                 int controls_screen = s_menu_screen == MENU_CONTROLS;
                 int panel_h = keyboard_screen ? 210 :
                               pad_screen ? 230 :
-                              controls_screen ? 190 : 140;
-                int panel_y = NG_SCREEN_H / 2 - panel_h / 2;
+                              controls_screen ? 190 :
+                              s_menu_screen == MENU_GRAPHICS ? 210 : 140;
+                int panel_y = s_canvas_h / 2 - panel_h / 2;
                 int first_y = menu_first_item_y(panel_y);
                 int row_step = menu_is_profile_screen() ? 13 :
                     keyboard_screen ? 17 : 22;
                 int count = menu_item_count();
                 int panel_w = keyboard_screen ? 240 :
                               pad_screen ? 260 :
-                              controls_screen ? 230 : 200;
+                              controls_screen ? 230 : 220;
                 int i;
 
-                if (mx >= NG_SCREEN_W / 2 - (panel_w / 2 - 8) &&
-                    mx <= NG_SCREEN_W / 2 + (panel_w / 2 - 8)) {
+                if (mx >= s_canvas_w / 2 - (panel_w / 2 - 8) &&
+                    mx <= s_canvas_w / 2 + (panel_w / 2 - 8)) {
                     for (i = 0; i < count; i++) {
                         int top = first_y + i * row_step;
 
@@ -2511,11 +2842,20 @@ static bool menu_run(const uint32_t *fb) {
                             keyboard_screen ? 15 : 18;
 
                         if (my >= top && my < top + row_height) {
+                            if (s_menu_confirm_restore &&
+                                s_menu_selection != i) {
+                                s_menu_confirm_restore = false;
+                                s_menu_status[0] = '\0';
+                            }
                             s_menu_selection = i;
 
                             if (e.type == SDL_MOUSEBUTTONDOWN &&
                                 e.button.button == SDL_BUTTON_LEFT) {
                                 menu_activate();
+                            } else if (e.type == SDL_MOUSEBUTTONDOWN &&
+                                       e.button.button == SDL_BUTTON_RIGHT &&
+                                       s_menu_confirm_restore) {
+                                menu_back();
                             }
                             break;
                         }
@@ -2532,8 +2872,12 @@ static bool menu_run(const uint32_t *fb) {
         SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
         SDL_RenderClear(s_ren);
 
-        if (s_tex)
-            SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+        if (s_tex) {
+            SDL_Rect game_rect;
+            graphics_game_rect(&game_rect);
+            SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
+            graphics_draw_scanlines(&game_rect);
+        }
 
         menu_draw();
         SDL_RenderPresent(s_ren);
@@ -2630,7 +2974,12 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
         SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
         SDL_RenderClear(s_ren);
 
-        SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
+        {
+            SDL_Rect game_rect;
+            graphics_game_rect(&game_rect);
+            SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
+            graphics_draw_scanlines(&game_rect);
+        }
         SDL_RenderPresent(s_ren);
     }
 
