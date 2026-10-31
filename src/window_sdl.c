@@ -2389,7 +2389,7 @@ static void menu_activate(void)
         } else if (s_menu_selection == 10) {
             s_menu_confirm_restore = true;
             snprintf(s_menu_status, sizeof s_menu_status,
-                     "RESTORE: ENTER/A YES ESC/B NO");
+                     "RESTORE: ENTER OR A YES ESC OR B NO");
         } else {
             menu_back();
         }
@@ -2412,7 +2412,7 @@ static void menu_activate(void)
         } else if (s_menu_selection == 11) {
             s_menu_confirm_restore = true;
             snprintf(s_menu_status, sizeof s_menu_status,
-                     "RESTORE: ENTER/A YES ESC/B NO");
+                     "RESTORE: ENTER OR A YES ESC OR B NO");
         } else {
             menu_back();
         }
