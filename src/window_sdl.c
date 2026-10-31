@@ -2743,17 +2743,7 @@ static bool menu_run(const uint32_t *fb) {
                     continue;
                 }
 
-                if (sc == b.pause_toggle) {
-                s_game_paused = true;
-                break;
-            }
-
-            if (sc == b.screenshot) {
-                s_screenshot_pending = true;
-                continue;
-            }
-
-            if (sc == b.overlay_toggle) {
+                if (sc == b.overlay_toggle) {
                     s_menu_confirm_restore = false;
                     s_menu_status[0] = '\0';
                     s_menu_open = false;
@@ -3125,6 +3115,16 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
 
         if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
             SDL_Scancode sc = e.key.keysym.scancode;
+
+            if (sc == b.pause_toggle) {
+                s_game_paused = true;
+                break;
+            }
+
+            if (sc == b.screenshot) {
+                s_screenshot_pending = true;
+                continue;
+            }
 
             if (sc == b.overlay_toggle) {
                 s_menu_open = true;
