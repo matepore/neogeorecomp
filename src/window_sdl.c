@@ -34,6 +34,14 @@ static int s_window_scale = 2;
 static graphics_aspect_t s_graphics_aspect = GRAPHICS_ORIGINAL;
 static bool s_fullscreen = false;
 static bool s_vsync = false;
+
+typedef enum {
+    GRAPHICS_FILTER_NEAREST = 0,
+    GRAPHICS_FILTER_BILINEAR,
+    GRAPHICS_FILTER_SCANLINES
+} graphics_filter_t;
+
+static graphics_filter_t s_graphics_filter = GRAPHICS_FILTER_NEAREST;
 static int s_canvas_w = NG_SCREEN_W;
 static int s_canvas_h = NG_SCREEN_H;
 
@@ -1222,6 +1230,24 @@ static void graphics_game_rect(SDL_Rect *rect)
     }
 }
 
+static void graphics_draw_scanlines(const SDL_Rect *game_rect)
+{
+    int y;
+
+    if (s_graphics_filter != GRAPHICS_FILTER_SCANLINES)
+        return;
+
+    SDL_SetRenderDrawBlendMode(s_ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 64);
+
+    for (y = game_rect->y + 1; y < game_rect->y + game_rect->h; y += 2) {
+        SDL_Rect line = { game_rect->x, y, game_rect->w, 1 };
+        SDL_RenderFillRect(s_ren, &line);
+    }
+
+    SDL_SetRenderDrawBlendMode(s_ren, SDL_BLENDMODE_NONE);
+}
+
 static void graphics_save(void)
 {
     FILE *f = fopen("graphics.cfg", "w");
@@ -1236,6 +1262,9 @@ static void graphics_save(void)
             s_graphics_aspect == GRAPHICS_16_9 ? "16:9" : "ORIGINAL");
     fprintf(f, "FULLSCREEN=%s\n", s_fullscreen ? "ON" : "OFF");
     fprintf(f, "VSYNC=%s\n", s_vsync ? "ON" : "OFF");
+    fprintf(f, "FILTER=%s\n",
+            s_graphics_filter == GRAPHICS_FILTER_BILINEAR ? "BILINEAR" :
+            s_graphics_filter == GRAPHICS_FILTER_SCANLINES ? "SCANLINES" : "NEAREST");
     fclose(f);
 }
 
@@ -1249,6 +1278,7 @@ static void graphics_load(int fallback_scale)
     s_graphics_aspect = GRAPHICS_ORIGINAL;
     s_fullscreen = false;
     s_vsync = false;
+    s_graphics_filter = GRAPHICS_FILTER_NEAREST;
 
     f = fopen("graphics.cfg", "r");
     if (!f)
@@ -1276,6 +1306,13 @@ static void graphics_load(int fallback_scale)
             s_fullscreen = strcmp(value, "ON") == 0;
         } else if (strcmp(key, "VSYNC") == 0) {
             s_vsync = strcmp(value, "ON") == 0;
+        } else if (strcmp(key, "FILTER") == 0) {
+            if (strcmp(value, "BILINEAR") == 0)
+                s_graphics_filter = GRAPHICS_FILTER_BILINEAR;
+            else if (strcmp(value, "SCANLINES") == 0)
+                s_graphics_filter = GRAPHICS_FILTER_SCANLINES;
+            else
+                s_graphics_filter = GRAPHICS_FILTER_NEAREST;
         }
     }
 
@@ -1290,6 +1327,22 @@ static bool graphics_set_vsync(void)
     if (SDL_RenderSetVSync(s_ren, s_vsync ? 1 : 0) != 0) {
         fprintf(stderr, "[graphics] cannot set VSync to %s: %s\n",
                 s_vsync ? "ON" : "OFF", SDL_GetError());
+        return false;
+    }
+
+    return true;
+}
+
+static bool graphics_set_filter(void)
+{
+    SDL_ScaleMode mode = s_graphics_filter == GRAPHICS_FILTER_BILINEAR
+        ? SDL_ScaleModeLinear : SDL_ScaleModeNearest;
+
+    if (!s_tex)
+        return true;
+
+    if (SDL_SetTextureScaleMode(s_tex, mode) != 0) {
+        fprintf(stderr, "[graphics] cannot set filter: %s\n", SDL_GetError());
         return false;
     }
 
@@ -1347,6 +1400,21 @@ static void graphics_change(int option, int direction)
         s_vsync = !s_vsync;
         if (!graphics_set_vsync()) {
             s_vsync = previous;
+            return;
+        }
+    } else if (option == 4) {
+        graphics_filter_t previous = s_graphics_filter;
+        int filter = (int)s_graphics_filter + direction;
+
+        if (filter < GRAPHICS_FILTER_NEAREST)
+            filter = GRAPHICS_FILTER_SCANLINES;
+        if (filter > GRAPHICS_FILTER_SCANLINES)
+            filter = GRAPHICS_FILTER_NEAREST;
+
+        s_graphics_filter = (graphics_filter_t)filter;
+        if (!graphics_set_filter()) {
+            s_graphics_filter = previous;
+            (void)graphics_set_filter();
             return;
         }
     } else {
@@ -1424,6 +1492,11 @@ int window_open(const char *title, int scale) {
         /* Keep startup usable when the renderer does not support VSync. */
         s_vsync = false;
         (void)SDL_RenderSetVSync(s_ren, 0);
+    }
+
+    if (!graphics_set_filter()) {
+        s_graphics_filter = GRAPHICS_FILTER_NEAREST;
+        (void)graphics_set_filter();
     }
 
     graphics_apply(false);
@@ -2116,7 +2189,7 @@ static int menu_item_count(void)
         return 6;
 
     case MENU_GRAPHICS:
-        return 5;
+        return 6;
 
     case MENU_KEYBOARD_P1:
     case MENU_KEYBOARD_P2:
@@ -2282,7 +2355,7 @@ static void menu_activate(void)
         break;
 
     case MENU_GRAPHICS:
-        if (s_menu_selection < 4) {
+        if (s_menu_selection < 5) {
             graphics_change(s_menu_selection, 1);
         } else {
             menu_back();
@@ -2357,7 +2430,7 @@ static void menu_draw(void)
     int panel_h = keyboard_screen ? 210 :
                   pad_screen ? 230 :
                   controls_screen ? 190 :
-                  s_menu_screen == MENU_GRAPHICS ? 180 : 140;
+                  s_menu_screen == MENU_GRAPHICS ? 210 : 140;
 
     SDL_Rect panel = {
         s_canvas_w / 2 - panel_w / 2,
@@ -2373,6 +2446,7 @@ static void menu_draw(void)
     const char *items[9] = { "", "", "", "", "", "", "", "", "" };
     char graphics_size[32];
     char graphics_aspect[40];
+    char graphics_filter[40];
 
     int count;
     int first_y;
@@ -2419,7 +2493,12 @@ static void menu_draw(void)
         items[1] = graphics_aspect;
         items[2] = s_fullscreen ? "FULLSCREEN: ON" : "FULLSCREEN: OFF";
         items[3] = s_vsync ? "VSYNC: ON" : "VSYNC: OFF";
-        items[4] = "BACK";
+        snprintf(graphics_filter, sizeof graphics_filter,
+                 "FILTER: %s",
+                 s_graphics_filter == GRAPHICS_FILTER_BILINEAR ? "BILINEAR" :
+                 s_graphics_filter == GRAPHICS_FILTER_SCANLINES ? "SCANLINES" : "NEAREST");
+        items[4] = graphics_filter;
+        items[5] = "BACK";
         break;
 
     case MENU_KEYBOARD_P1:
@@ -2703,7 +2782,7 @@ static bool menu_run(const uint32_t *fb) {
                 int panel_h = keyboard_screen ? 210 :
                               pad_screen ? 230 :
                               controls_screen ? 190 :
-                              s_menu_screen == MENU_GRAPHICS ? 180 : 140;
+                              s_menu_screen == MENU_GRAPHICS ? 210 : 140;
                 int panel_y = s_canvas_h / 2 - panel_h / 2;
                 int first_y = menu_first_item_y(panel_y);
                 int row_step = menu_is_profile_screen() ? 13 :
@@ -2748,6 +2827,7 @@ static bool menu_run(const uint32_t *fb) {
             SDL_Rect game_rect;
             graphics_game_rect(&game_rect);
             SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
+            graphics_draw_scanlines(&game_rect);
         }
 
         menu_draw();
@@ -2849,6 +2929,7 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
             SDL_Rect game_rect;
             graphics_game_rect(&game_rect);
             SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
+            graphics_draw_scanlines(&game_rect);
         }
         SDL_RenderPresent(s_ren);
     }
