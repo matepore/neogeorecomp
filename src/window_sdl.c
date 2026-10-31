@@ -65,6 +65,7 @@ static SDL_Scancode s_conflict_scancode = SDL_SCANCODE_UNKNOWN;
 static int s_conflict_action = -1;
 
 static char s_menu_status[64] = "";
+static bool s_menu_confirm_restore = false;
 
 
 /* ponytail: a fixed layout; remapping belongs to the frontend (ROADMAP.md) */
@@ -2230,6 +2231,12 @@ static void menu_back(void)
         return;
     }
 
+    if (s_menu_confirm_restore) {
+        s_menu_confirm_restore = false;
+        snprintf(s_menu_status, sizeof s_menu_status, "CANCELLED");
+        return;
+    }
+
     if (s_menu_screen == MENU_KEYBOARD_P1 ||
         s_menu_screen == MENU_KEYBOARD_P2 ||
         s_menu_screen == MENU_KEYBOARD_SYSTEM ||
@@ -2306,6 +2313,19 @@ static void menu_restore_pad_defaults(void)
 
 static void menu_activate(void)
 {
+    if (s_menu_confirm_restore) {
+        s_menu_confirm_restore = false;
+        if (s_menu_screen == MENU_KEYBOARD_P1 ||
+            s_menu_screen == MENU_KEYBOARD_P2) {
+            menu_restore_keyboard_defaults(
+                s_menu_screen == MENU_KEYBOARD_P1 ? 0 : 1);
+        } else if (s_menu_screen == MENU_PAD_P1 ||
+                   s_menu_screen == MENU_PAD_P2) {
+            menu_restore_pad_defaults();
+        }
+        return;
+    }
+
     if (s_menu_capturing || s_pad_capturing)
         return;
 
@@ -2367,8 +2387,9 @@ static void menu_activate(void)
         if (s_menu_selection < 10) {
             menu_start_capture(menu_keyboard_action_index());
         } else if (s_menu_selection == 10) {
-            menu_restore_keyboard_defaults(
-                s_menu_screen == MENU_KEYBOARD_P1 ? 0 : 1);
+            s_menu_confirm_restore = true;
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "RESTORE: ENTER/A YES ESC/B NO");
         } else {
             menu_back();
         }
@@ -2389,7 +2410,9 @@ static void menu_activate(void)
         } else if (s_menu_selection == 10) {
             menu_start_pad_reassignment();
         } else if (s_menu_selection == 11) {
-            menu_restore_pad_defaults();
+            s_menu_confirm_restore = true;
+            snprintf(s_menu_status, sizeof s_menu_status,
+                     "RESTORE: ENTER/A YES ESC/B NO");
         } else {
             menu_back();
         }
@@ -2397,7 +2420,17 @@ static void menu_activate(void)
     }
 }
 
+static void menu_horizontal(int direction)
+{
+    if (s_menu_screen == MENU_GRAPHICS)
+        graphics_change(s_menu_selection, direction);
+}
+
 static void menu_move(int direction) {
+    if (s_menu_confirm_restore) {
+        s_menu_confirm_restore = false;
+        s_menu_status[0] = '\0';
+    }
     int count = menu_item_count();
 
     if (count <= 0)
@@ -2596,18 +2629,18 @@ static void menu_draw(void)
         option.h = menu_is_profile_screen() ? 12 :
            keyboard_screen ? 15 : 18;
 
-        text_color = s_menu_selection == i ? white : muted;
+        text_color = s_menu_selection == i ? cyan : muted;
 
         if (s_menu_selection == i) {
             SDL_Rect marker = {
-                option.x + 3, option.y + 5, 4, 4
+                option.x + 2, option.y + 2, 3, option.h - 4
             };
 
-            SDL_SetRenderDrawColor(s_ren, 40, 100, 145, 255);
+            SDL_SetRenderDrawColor(s_ren, 28, 75, 110, 255);
             SDL_RenderFillRect(s_ren, &option);
-
             SDL_SetRenderDrawColor(s_ren, cyan.r, cyan.g,
                                    cyan.b, cyan.a);
+            SDL_RenderDrawRect(s_ren, &option);
             SDL_RenderFillRect(s_ren, &marker);
         }
 
@@ -2695,11 +2728,9 @@ static bool menu_run(const uint32_t *fb) {
                 } else if (sc == SDL_SCANCODE_DOWN) {
                     menu_move(1);
                 } else if (sc == SDL_SCANCODE_LEFT) {
-                    if (s_menu_screen == MENU_GRAPHICS)
-                        graphics_change(s_menu_selection, -1);
+                    menu_horizontal(-1);
                 } else if (sc == SDL_SCANCODE_RIGHT) {
-                    if (s_menu_screen == MENU_GRAPHICS)
-                        graphics_change(s_menu_selection, 1);
+                    menu_horizontal(1);
                 } else if (sc == SDL_SCANCODE_RETURN ||
                            sc == SDL_SCANCODE_SPACE) {
                     menu_activate();
@@ -2727,11 +2758,9 @@ static bool menu_run(const uint32_t *fb) {
                 } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
                     menu_move(1);
                 } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-                    if (s_menu_screen == MENU_GRAPHICS)
-                        graphics_change(s_menu_selection, -1);
+                    menu_horizontal(-1);
                 } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-                    if (s_menu_screen == MENU_GRAPHICS)
-                        graphics_change(s_menu_selection, 1);
+                    menu_horizontal(1);
                 } else if (button == SDL_CONTROLLER_BUTTON_A ||
                            button == SDL_CONTROLLER_BUTTON_START) {
                     menu_activate();
@@ -2749,12 +2778,10 @@ static bool menu_run(const uint32_t *fb) {
                         menu_move(-1);
                     else if (e.jhat.value & SDL_HAT_DOWN)
                         menu_move(1);
-                    else if (s_menu_screen == MENU_GRAPHICS &&
-                             (e.jhat.value & SDL_HAT_LEFT))
-                        graphics_change(s_menu_selection, -1);
-                    else if (s_menu_screen == MENU_GRAPHICS &&
-                             (e.jhat.value & SDL_HAT_RIGHT))
-                        graphics_change(s_menu_selection, 1);
+                    else if (e.jhat.value & SDL_HAT_LEFT)
+                        menu_horizontal(-1);
+                    else if (e.jhat.value & SDL_HAT_RIGHT)
+                        menu_horizontal(1);
                 }
             }
 
@@ -2802,11 +2829,20 @@ static bool menu_run(const uint32_t *fb) {
                             keyboard_screen ? 15 : 18;
 
                         if (my >= top && my < top + row_height) {
+                            if (s_menu_confirm_restore &&
+                                s_menu_selection != i) {
+                                s_menu_confirm_restore = false;
+                                s_menu_status[0] = '\0';
+                            }
                             s_menu_selection = i;
 
                             if (e.type == SDL_MOUSEBUTTONDOWN &&
                                 e.button.button == SDL_BUTTON_LEFT) {
                                 menu_activate();
+                            } else if (e.type == SDL_MOUSEBUTTONDOWN &&
+                                       e.button.button == SDL_BUTTON_RIGHT &&
+                                       s_menu_confirm_restore) {
+                                menu_back();
                             }
                             break;
                         }
