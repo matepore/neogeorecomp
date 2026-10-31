@@ -131,7 +131,7 @@ static char player_device_guid[2][33], player_device_serial[2][128];
 static char player_device_path[2][256];
 static bool s_pad_reassigning = false;
 
-static const char *names[25] = {
+static const char *names[27] = {
     "P1_UP", "P1_DOWN", "P1_LEFT", "P1_RIGHT",
     "P1_A", "P1_B", "P1_C", "P1_D",
     "P2_UP", "P2_DOWN", "P2_LEFT", "P2_RIGHT",
@@ -729,7 +729,7 @@ static int save_bindings(void)
     if (fprintf(f, "# Keyboard bindings\n") < 0)
         ok = 0;
 
-    for (i = 0; i < 25; i++) {
+    for (i = 0; i < 27; i++) {
         SDL_Scancode *key = slot(names[i]);
 
         if (!key || *key == SDL_SCANCODE_UNKNOWN) {
