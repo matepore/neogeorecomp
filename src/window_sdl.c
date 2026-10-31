@@ -2714,6 +2714,8 @@ static bool menu_run(const uint32_t *fb) {
                 }
 
                 if (sc == b.overlay_toggle) {
+                    s_menu_confirm_restore = false;
+                    s_menu_status[0] = '\0';
                     s_menu_open = false;
                     break;
                 }
