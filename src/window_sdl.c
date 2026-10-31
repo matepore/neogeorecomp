@@ -2466,7 +2466,7 @@ static void menu_draw(void)
     int controls_screen = s_menu_screen == MENU_CONTROLS;
     int panel_w = keyboard_screen ? 240 :
                   pad_screen ? 260 :
-                  controls_screen ? 230 : 200;
+                  controls_screen ? 230 : 220;
     int panel_h = keyboard_screen ? 210 :
                   pad_screen ? 230 :
                   controls_screen ? 190 :
@@ -2567,6 +2567,10 @@ static void menu_draw(void)
 
     menu_draw_text(panel.x + 12, panel.y + 8,
                    title, 2, white);
+
+    SDL_SetRenderDrawColor(s_ren, 70, 110, 145, 180);
+    SDL_RenderDrawLine(s_ren, panel.x + 10, panel.y + 25,
+                       panel.x + panel.w - 10, panel.y + 25);
 
     count = menu_item_count();
     first_y = menu_first_item_y(panel.y);
@@ -2826,7 +2830,7 @@ static bool menu_run(const uint32_t *fb) {
                 int count = menu_item_count();
                 int panel_w = keyboard_screen ? 240 :
                               pad_screen ? 260 :
-                              controls_screen ? 230 : 200;
+                              controls_screen ? 230 : 220;
                 int i;
 
                 if (mx >= s_canvas_w / 2 - (panel_w / 2 - 8) &&
