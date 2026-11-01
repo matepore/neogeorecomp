@@ -36,6 +36,42 @@ static int save_screenshot(void);
 static int settings_save(void);
 static int s_menu_selection = 0;
 
+/*
+ * Keep settings beside the executable, independently of the process working
+ * directory (which may differ when launched by a shortcut or frontend).
+ */
+static FILE *settings_open(const char *mode)
+{
+    char *base_path = SDL_GetBasePath();
+    char *settings_path;
+    size_t base_length;
+    size_t path_length;
+    FILE *file;
+
+    if (!base_path)
+        return NULL;
+
+    base_length = strlen(base_path);
+    if (base_length > SIZE_MAX - sizeof("settings.cfg")) {
+        SDL_free(base_path);
+        return NULL;
+    }
+
+    path_length = base_length + sizeof("settings.cfg");
+    settings_path = (char *)SDL_malloc(path_length);
+    if (!settings_path) {
+        SDL_free(base_path);
+        return NULL;
+    }
+
+    snprintf(settings_path, path_length, "%ssettings.cfg", base_path);
+    file = fopen(settings_path, mode);
+
+    SDL_free(settings_path);
+    SDL_free(base_path);
+    return file;
+}
+
 typedef enum {
     GRAPHICS_ORIGINAL = 0,
     GRAPHICS_4_3,
@@ -560,7 +596,7 @@ static void load_bindings(void) {
     memset(player_device_serial, 0, sizeof player_device_serial);
     memset(player_device_path, 0, sizeof player_device_path);
 
-    f = fopen("settings.cfg", "r");
+    f = settings_open("r");
     if (!f) {
         fprintf(stderr,
                 "[input] settings.cfg missing; using defaults.\n");
@@ -1235,7 +1271,7 @@ static void graphics_load(int fallback_scale)
     s_vsync = false;
     s_graphics_filter = GRAPHICS_FILTER_NEAREST;
 
-    f = fopen("settings.cfg", "r");
+    f = settings_open("r");
     if (!f)
         return;
 
@@ -1286,7 +1322,7 @@ static void graphics_load(int fallback_scale)
 
 static int settings_save(void)
 {
-    FILE *f = fopen("settings.cfg", "w");
+    FILE *f = settings_open("w");
     int i, ok = 1;
     char value[32];
     if (!f)
