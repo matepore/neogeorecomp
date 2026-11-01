@@ -12,6 +12,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdlib.h>
+#include <time.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #define MAX_INPUT_DEVICES 8
 #define AXIS_DEADZONE 8000
@@ -22,6 +29,10 @@ static SDL_Texture *s_tex;
 static uint64_t s_next_tick;
 static SDL_AudioDeviceID s_audio;
 static bool s_menu_open = false;
+static bool s_game_paused = false;
+static bool s_screenshot_pending = false;
+
+static int save_screenshot(void);
 static int s_menu_selection = 0;
 
 typedef enum {
@@ -74,6 +85,7 @@ typedef struct {
     SDL_Scancode p1[8], p2[8];
     SDL_Scancode start1, start2, select1, coin1, coin2, service, test;
     SDL_Scancode overlay_toggle, fullscreen_toggle;
+    SDL_Scancode pause_toggle, screenshot;
 } bindings_t;
 
 typedef struct {
@@ -124,13 +136,14 @@ static char player_device_guid[2][33], player_device_serial[2][128];
 static char player_device_path[2][256];
 static bool s_pad_reassigning = false;
 
-static const char *names[25] = {
+static const char *names[27] = {
     "P1_UP", "P1_DOWN", "P1_LEFT", "P1_RIGHT",
     "P1_A", "P1_B", "P1_C", "P1_D",
     "P2_UP", "P2_DOWN", "P2_LEFT", "P2_RIGHT",
     "P2_A", "P2_B", "P2_C", "P2_D",
     "START1", "START2", "SELECT", "COIN1", "COIN2",
-    "SERVICE", "TEST", "OVERLAY", "FULLSCREEN"
+    "SERVICE", "TEST", "OVERLAY", "FULLSCREEN",
+    "PAUSE", "SCREENSHOT"
 };
 
 static SDL_Scancode *slot(const char *n) {
@@ -151,6 +164,8 @@ static SDL_Scancode *slot(const char *n) {
     if (!strcmp(n, "TEST")) return &b.test;
     if (!strcmp(n, "OVERLAY")) return &b.overlay_toggle;
     if (!strcmp(n, "FULLSCREEN")) return &b.fullscreen_toggle;
+    if (!strcmp(n, "PAUSE")) return &b.pause_toggle;
+    if (!strcmp(n, "SCREENSHOT")) return &b.screenshot;
 
     return NULL;
 }
@@ -182,6 +197,8 @@ static void defaults(void) {
     b.test = SDL_SCANCODE_F2;
     b.overlay_toggle = SDL_SCANCODE_F1;
     b.fullscreen_toggle = SDL_SCANCODE_F11;
+    b.pause_toggle = SDL_SCANCODE_PAUSE;
+    b.screenshot = SDL_SCANCODE_PRINTSCREEN;
 }
 
 static pad_binding_t *pad_slot(const char *name) {
@@ -629,7 +646,7 @@ static void load_bindings(void) {
     fclose(f);
 
     /* Reject duplicate assigned keys, but allow multiple unassigned actions. */
-    for (i = 0; i < 25; i++) {
+    for (i = 0; i < 27; i++) {
         if (*slot(names[i]) == SDL_SCANCODE_UNKNOWN)
             continue;
 
@@ -717,7 +734,7 @@ static int save_bindings(void)
     if (fprintf(f, "# Keyboard bindings\n") < 0)
         ok = 0;
 
-    for (i = 0; i < 25; i++) {
+    for (i = 0; i < 27; i++) {
         SDL_Scancode *key = slot(names[i]);
 
         if (!key || *key == SDL_SCANCODE_UNKNOWN) {
@@ -1594,14 +1611,14 @@ static void menu_toggle_fullscreen(void)
     graphics_save();
 }
 
-static const char *keyboard_labels[25] = {
+static const char *keyboard_labels[27] = {
     "P1 UP", "P1 DOWN", "P1 LEFT", "P1 RIGHT",
     "P1 A", "P1 B", "P1 C", "P1 D",
     "P2 UP", "P2 DOWN", "P2 LEFT", "P2 RIGHT",
     "P2 A", "P2 B", "P2 C", "P2 D",
     "START 1", "START 2", "SELECT",
     "COIN 1", "COIN 2", "SERVICE", "TEST",
-    "OPEN OVERLAY", "FULLSCREEN"
+    "OPEN OVERLAY", "FULLSCREEN", "PAUSE GAME", "SCREENSHOT"
 };
 
 static int menu_is_keyboard_screen(void)
@@ -1618,19 +1635,21 @@ static int menu_keyboard_action_count(void)
         return 10;
 
     if (s_menu_screen == MENU_KEYBOARD_SYSTEM)
-        return 5;
+        return 7;
 
     return 0;
 }
 
 static int menu_keyboard_action_index(void)
 {
-    static const int system_actions[5] = {
+    static const int system_actions[7] = {
         18, /* SELECT */
         21, /* SERVICE */
         22, /* TEST */
         23, /* OPEN OVERLAY */
-        24  /* FULLSCREEN */
+        24, /* FULLSCREEN */
+        25, /* PAUSE GAME */
+        26  /* SCREENSHOT */
     };
 
     if (s_menu_screen == MENU_KEYBOARD_P1) {
@@ -1656,7 +1675,7 @@ static int menu_keyboard_action_index(void)
     }
 
     if (s_menu_screen == MENU_KEYBOARD_SYSTEM &&
-        s_menu_selection >= 0 && s_menu_selection < 5)
+        s_menu_selection >= 0 && s_menu_selection < 7)
         return system_actions[s_menu_selection];
 
     return -1;
@@ -1666,7 +1685,7 @@ static const char *menu_key_name(int action)
 {
     SDL_Scancode *key;
 
-    if (action < 0 || action >= 25)
+    if (action < 0 || action >= 27)
         return "NONE";
 
     key = slot(names[action]);
@@ -1683,7 +1702,7 @@ static int menu_find_key_conflict(
 {
     int i;
 
-    for (i = 0; i < 25; i++) {
+    for (i = 0; i < 27; i++) {
         SDL_Scancode *key = slot(names[i]);
 
         if (i != except_action &&
@@ -1699,7 +1718,7 @@ static int menu_find_key_conflict(
 
 static void menu_start_capture(int action)
 {
-    if (action < 0 || action >= 25)
+    if (action < 0 || action >= 27)
         return;
 
     s_capture_action = action;
@@ -2202,7 +2221,7 @@ static int menu_item_count(void)
     case MENU_KEYBOARD_P2:
         return 12; /* 10 actions + restore + back */
     case MENU_KEYBOARD_SYSTEM:
-        return 6;  /* 5 actions + back */
+        return 8;  /* 7 actions + back */
     case MENU_PAD_P1:
     case MENU_PAD_P2:
         return 13; /* 10 actions + change controller + restore + back */
@@ -2402,7 +2421,7 @@ static void menu_activate(void)
         break;
 
     case MENU_KEYBOARD_SYSTEM:
-        if (s_menu_selection < 5) {
+        if (s_menu_selection < 7) {
             menu_start_capture(menu_keyboard_action_index());
         } else {
             menu_back();
@@ -2717,6 +2736,11 @@ static bool menu_run(const uint32_t *fb) {
                     continue;
                 }
 
+                if (sc == b.screenshot) {
+                    s_screenshot_pending = true;
+                    continue;
+                }
+
                 if (sc == b.fullscreen_toggle ||
                     (sc == SDL_SCANCODE_RETURN &&
                     (e.key.keysym.mod & KMOD_ALT))) {
@@ -2880,6 +2904,10 @@ static bool menu_run(const uint32_t *fb) {
         }
 
         menu_draw();
+        if (s_screenshot_pending) {
+            s_screenshot_pending = false;
+            save_screenshot();
+        }
         SDL_RenderPresent(s_ren);
         SDL_Delay(16);
     }
@@ -2921,6 +2949,170 @@ static bool menu_any_controller_button_down(void) {
     return false;
 }
 
+static int save_screenshot(void)
+{
+    int width, height;
+    uint32_t *pixels;
+    size_t pixel_count;
+    char path[160];
+    time_t now;
+    struct tm *local;
+    static unsigned int sequence;
+    char timestamp[32];
+
+    if (SDL_GetRendererOutputSize(s_ren, &width, &height) != 0 ||
+        width <= 0 || height <= 0) {
+        fprintf(stderr, "[screenshot] renderer size: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    if ((size_t)width > SIZE_MAX / (size_t)height / sizeof(*pixels)) {
+        fprintf(stderr, "[screenshot] renderer output is too large\n");
+        return -1;
+    }
+
+    pixel_count = (size_t)width * (size_t)height;
+    pixels = (uint32_t *)malloc(pixel_count * sizeof(*pixels));
+    if (!pixels) {
+        fprintf(stderr, "[screenshot] out of memory\n");
+        return -1;
+    }
+
+    if (SDL_RenderReadPixels(s_ren, NULL, SDL_PIXELFORMAT_ARGB8888,
+                             pixels, width * (int)sizeof(*pixels)) != 0) {
+        fprintf(stderr, "[screenshot] readback: %s\n", SDL_GetError());
+        free(pixels);
+        return -1;
+    }
+
+#ifdef _WIN32
+    (void)_mkdir("screenshots");
+#else
+    (void)mkdir("screenshots", 0777);
+#endif
+
+    now = time(NULL);
+    local = localtime(&now);
+    if (local)
+        strftime(timestamp, sizeof timestamp, "%Y%m%d_%H%M%S", local);
+    else
+        snprintf(timestamp, sizeof timestamp, "%u", SDL_GetTicks());
+
+    do {
+        SDL_RWops *existing;
+        ++sequence;
+        snprintf(path, sizeof path,
+                 "screenshots/magdrop3_%s_%u_%u.png",
+                 timestamp, SDL_GetTicks(), sequence);
+        existing = SDL_RWFromFile(path, "rb");
+        if (!existing)
+            break;
+        SDL_RWclose(existing);
+    } while (sequence != 0);
+
+    if (write_png(path, pixels, width, height) != 0) {
+        fprintf(stderr, "[screenshot] cannot write %s\n", path);
+        free(pixels);
+        return -1;
+    }
+
+    fprintf(stderr, "[screenshot] saved %s (%dx%d)\n",
+            path, width, height);
+    free(pixels);
+    return 0;
+}
+
+static bool pause_run(const uint32_t *fb)
+{
+    SDL_Event e;
+
+    if (fb && s_tex)
+        SDL_UpdateTexture(s_tex, NULL, fb, NG_SCREEN_W * 4);
+
+    if (s_audio) {
+        SDL_PauseAudioDevice(s_audio, 1);
+        SDL_ClearQueuedAudio(s_audio);
+    }
+
+    while (s_game_paused) {
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT)
+                return false;
+
+            handle_device_events(&e);
+
+            if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
+                SDL_Scancode sc = e.key.keysym.scancode;
+
+                if (sc == b.pause_toggle) {
+                    s_game_paused = false;
+                    break;
+                }
+
+                if (sc == b.screenshot) {
+                    s_screenshot_pending = true;
+                    continue;
+                }
+
+                if (sc == b.overlay_toggle) {
+                    s_menu_open = true;
+                    s_menu_screen = MENU_MAIN;
+                    s_menu_selection = 0;
+                    break;
+                }
+
+                if (sc == SDL_SCANCODE_ESCAPE)
+                    return false;
+
+                if (sc == b.fullscreen_toggle ||
+                    (sc == SDL_SCANCODE_RETURN &&
+                     (e.key.keysym.mod & KMOD_ALT))) {
+                    menu_toggle_fullscreen();
+                }
+            }
+        }
+
+        if (!s_game_paused)
+            break;
+
+        if (s_menu_open) {
+            if (!menu_run(fb))
+                return false;
+        }
+
+        if (!s_game_paused)
+            break;
+
+        SDL_SetRenderDrawColor(s_ren, 0, 0, 0, 255);
+        SDL_RenderClear(s_ren);
+
+        if (s_tex) {
+            SDL_Rect game_rect;
+            graphics_game_rect(&game_rect);
+            SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
+            graphics_draw_scanlines(&game_rect);
+        }
+
+        {
+            SDL_Color paused_color = { 90, 220, 255, 255 };
+            menu_draw_text(s_canvas_w / 2 - 36,
+                           s_canvas_h / 2 - 8,
+                           "PAUSED", 2, paused_color);
+        }
+
+        if (s_screenshot_pending) {
+            s_screenshot_pending = false;
+            save_screenshot();
+        }
+
+        SDL_RenderPresent(s_ren);
+        SDL_Delay(16);
+    }
+
+    s_game_paused = false;
+    return true;
+}
+
 bool window_frame(const uint32_t *fb, ng_input_t *in) {
     SDL_Event e;
 
@@ -2930,6 +3122,16 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
 
         if (e.type == SDL_KEYDOWN && e.key.repeat == 0) {
             SDL_Scancode sc = e.key.keysym.scancode;
+
+            if (sc == b.pause_toggle) {
+                s_game_paused = true;
+                break;
+            }
+
+            if (sc == b.screenshot) {
+                s_screenshot_pending = true;
+                continue;
+            }
 
             if (sc == b.overlay_toggle) {
                 s_menu_open = true;
@@ -2953,6 +3155,9 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
 
     if (s_menu_open)
         return menu_run(fb);
+
+    if (s_game_paused)
+        return pause_run(fb);
 
     read_keys(in);
     read_controller(0, in);
@@ -2979,6 +3184,10 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
             graphics_game_rect(&game_rect);
             SDL_RenderCopy(s_ren, s_tex, NULL, &game_rect);
             graphics_draw_scanlines(&game_rect);
+        }
+        if (s_screenshot_pending) {
+            s_screenshot_pending = false;
+            save_screenshot();
         }
         SDL_RenderPresent(s_ren);
     }
