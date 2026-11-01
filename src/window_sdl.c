@@ -1,6 +1,6 @@
 /*
  * SDL2 video, audio, keyboard and game-controller input.
- * Keyboard bindings are loaded from controls.cfg.
+ * Keyboard bindings are loaded from settings.cfg [Controls].
  * SDL-mapped controllers and generic joysticks are supported.
  * Controllers are assigned to players through their control profiles.
  * Escape quits the game.
@@ -33,6 +33,7 @@ static bool s_game_paused = false;
 static bool s_screenshot_pending = false;
 
 static int save_screenshot(void);
+static int settings_save(void);
 static int s_menu_selection = 0;
 
 typedef enum {
@@ -232,7 +233,7 @@ static pad_binding_t *pad_slot(const char *name) {
         }
     }
 
-    /* START y COIN conservan sus nombres antiguos en controls.cfg. */
+    /* START y COIN conservan sus nombres antiguos en settings.cfg. */
     if (strcmp(name, "PAD_START1") == 0)
         return &pad_players[0][8];
 
@@ -550,6 +551,7 @@ static void load_bindings(void) {
     FILE *f;
     char line[1024];
     int i, j;
+    int in_controls = 0;
 
     defaults();
     memset(pad_players, 0, sizeof pad_players);
@@ -558,10 +560,10 @@ static void load_bindings(void) {
     memset(player_device_serial, 0, sizeof player_device_serial);
     memset(player_device_path, 0, sizeof player_device_path);
 
-    f = fopen("controls.cfg", "r");
+    f = fopen("settings.cfg", "r");
     if (!f) {
         fprintf(stderr,
-                "[input] controls.cfg missing; using defaults.\n");
+                "[input] settings.cfg missing; using defaults.\n");
         return;
     }
 
@@ -576,6 +578,16 @@ static void load_bindings(void) {
         while (isspace((unsigned char)*key)) key++;
 
         if (!*key || *key == '#' || *key == ';') continue;
+
+        if (*key == '[') {
+            char *close = strchr(key, ']');
+            if (close) {
+                *close = '\0';
+                in_controls = strcmp(key + 1, "Controls") == 0;
+            }
+            continue;
+        }
+        if (!in_controls) continue;
 
         eq = strchr(key, '=');
         if (!eq) continue;
@@ -655,7 +667,7 @@ static void load_bindings(void) {
                 *slot(names[i]) == *slot(names[j])) {
                 defaults();
                 fprintf(stderr,
-                        "[input] Duplicate controls.cfg assignments; "
+                        "[input] Duplicate settings.cfg assignments; "
                         "using all defaults.\n");
                 return;
             }
@@ -719,73 +731,11 @@ static void format_pad_binding(
 
 static int save_bindings(void)
 {
-    FILE *f;
-    int i;
-    char value[32];
-    int ok = 1;
-
-    f = fopen("controls.cfg", "w");
-    if (!f) {
+    if (!settings_save()) {
         snprintf(s_menu_status, sizeof s_menu_status,
                  "SAVE ERROR");
         return 0;
     }
-
-    if (fprintf(f, "# Keyboard bindings\n") < 0)
-        ok = 0;
-
-    for (i = 0; i < 27; i++) {
-        SDL_Scancode *key = slot(names[i]);
-
-        if (!key || *key == SDL_SCANCODE_UNKNOWN) {
-            snprintf(value, sizeof value, "NONE");
-        } else {
-            const char *key_name = SDL_GetScancodeName(*key);
-
-            if (!key_name || !*key_name) {
-                snprintf(value, sizeof value, "NONE");
-            } else {
-                snprintf(value, sizeof value, "%s", key_name);
-            }
-        }
-
-        if (fprintf(f, "%s=%s\n", names[i], value) < 0)
-            ok = 0;
-    }
-
-    if (fprintf(f, "\n# Controller bindings\n") < 0)
-        ok = 0;
-
-    for (i = 0; i < 23; i++) {
-        pad_binding_t *binding = pad_slot(pad_names[i]);
-
-        if (!binding)
-            continue;
-
-        format_pad_binding(binding, value, sizeof value);
-
-        if (fprintf(f, "%s=%s\n", pad_names[i], value) < 0)
-            ok = 0;
-    }
-
-    if (fprintf(f,
-                "PAD_P1_DEVICE_GUID=%s\nPAD_P1_DEVICE_SERIAL=%s\n"
-                "PAD_P1_DEVICE_PATH=%s\nPAD_P2_DEVICE_GUID=%s\n"
-                "PAD_P2_DEVICE_SERIAL=%s\nPAD_P2_DEVICE_PATH=%s\n",
-                player_device_guid[0], player_device_serial[0],
-                player_device_path[0], player_device_guid[1],
-                player_device_serial[1], player_device_path[1]) < 0)
-        ok = 0;
-
-    if (fclose(f) != 0)
-        ok = 0;
-
-    if (!ok) {
-        snprintf(s_menu_status, sizeof s_menu_status,
-                 "SAVE ERROR");
-        return 0;
-    }
-
     snprintf(s_menu_status, sizeof s_menu_status,
              "SETTINGS SAVED");
     return 1;
@@ -1268,28 +1218,15 @@ static void graphics_draw_scanlines(const SDL_Rect *game_rect)
 
 static void graphics_save(void)
 {
-    FILE *f = fopen("graphics.cfg", "w");
-    if (!f) {
-        fprintf(stderr, "[graphics] cannot write graphics.cfg\n");
-        return;
-    }
-
-    fprintf(f, "WINDOW_SIZE=%dX\n", s_window_scale);
-    fprintf(f, "ASPECT_RATIO=%s\n",
-            s_graphics_aspect == GRAPHICS_4_3 ? "4:3" :
-            s_graphics_aspect == GRAPHICS_16_9 ? "16:9" : "ORIGINAL");
-    fprintf(f, "FULLSCREEN=%s\n", s_fullscreen ? "ON" : "OFF");
-    fprintf(f, "VSYNC=%s\n", s_vsync ? "ON" : "OFF");
-    fprintf(f, "FILTER=%s\n",
-            s_graphics_filter == GRAPHICS_FILTER_BILINEAR ? "BILINEAR" :
-            s_graphics_filter == GRAPHICS_FILTER_SCANLINES ? "SCANLINES" : "NEAREST");
-    fclose(f);
+    if (!settings_save())
+        fprintf(stderr, "[settings] cannot write settings.cfg\n");
 }
 
 static void graphics_load(int fallback_scale)
 {
     FILE *f;
     char line[128];
+    int in_graphics = 0;
 
     s_window_scale = fallback_scale < 2 ? 2 :
                      fallback_scale > 5 ? 5 : fallback_scale;
@@ -1298,16 +1235,27 @@ static void graphics_load(int fallback_scale)
     s_vsync = false;
     s_graphics_filter = GRAPHICS_FILTER_NEAREST;
 
-    f = fopen("graphics.cfg", "r");
+    f = fopen("settings.cfg", "r");
     if (!f)
         return;
 
     while (fgets(line, sizeof line, f)) {
+        char *entry = line;
+        char *close;
         char key[64], value[64];
-
-        if (sscanf(line, " %63[^=]=%63s", key, value) != 2)
+        while (isspace((unsigned char)*entry))
+            entry++;
+        if (*entry == '[') {
+            close = strchr(entry, ']');
+            if (close) {
+                *close = '\0';
+                in_graphics = strcmp(entry + 1, "Graphics") == 0;
+            }
             continue;
-
+        }
+        if (!in_graphics ||
+            sscanf(entry, "%63[^=]=%63s", key, value) != 2)
+            continue;
         if (strcmp(key, "WINDOW_SIZE") == 0) {
             int parsed = 0;
             if (sscanf(value, "%dX", &parsed) == 1 &&
@@ -1333,8 +1281,70 @@ static void graphics_load(int fallback_scale)
                 s_graphics_filter = GRAPHICS_FILTER_NEAREST;
         }
     }
-
     fclose(f);
+}
+
+static int settings_save(void)
+{
+    FILE *f = fopen("settings.cfg", "w");
+    int i, ok = 1;
+    char value[32];
+    if (!f)
+        return 0;
+
+    if (fprintf(f, "[Controls]\n# Keyboard bindings\n") < 0)
+        ok = 0;
+    for (i = 0; i < 27; i++) {
+        SDL_Scancode *key = slot(names[i]);
+        if (!key || *key == SDL_SCANCODE_UNKNOWN) {
+            snprintf(value, sizeof value, "NONE");
+        } else {
+            const char *key_name = SDL_GetScancodeName(*key);
+            if (!key_name || !*key_name)
+                snprintf(value, sizeof value, "NONE");
+            else
+                snprintf(value, sizeof value, "%s", key_name);
+        }
+        if (fprintf(f, "%s=%s\n", names[i], value) < 0)
+            ok = 0;
+    }
+
+    if (fprintf(f, "\n# Controller bindings\n") < 0)
+        ok = 0;
+    for (i = 0; i < 23; i++) {
+        pad_binding_t *binding = pad_slot(pad_names[i]);
+        if (!binding)
+            continue;
+        format_pad_binding(binding, value, sizeof value);
+        if (fprintf(f, "%s=%s\n", pad_names[i], value) < 0)
+            ok = 0;
+    }
+    if (fprintf(f,
+                "PAD_P1_DEVICE_GUID=%s\nPAD_P1_DEVICE_SERIAL=%s\n"
+                "PAD_P1_DEVICE_PATH=%s\nPAD_P2_DEVICE_GUID=%s\n"
+                "PAD_P2_DEVICE_SERIAL=%s\nPAD_P2_DEVICE_PATH=%s\n",
+                player_device_guid[0], player_device_serial[0],
+                player_device_path[0], player_device_guid[1],
+                player_device_serial[1], player_device_path[1]) < 0)
+        ok = 0;
+
+    if (fprintf(f,
+                "\n[Graphics]\nWINDOW_SIZE=%dX\nASPECT_RATIO=%s\n"
+                "FULLSCREEN=%s\nVSYNC=%s\nFILTER=%s\n",
+                s_window_scale,
+                s_graphics_aspect == GRAPHICS_4_3 ? "4:3" :
+                s_graphics_aspect == GRAPHICS_16_9 ? "16:9" : "ORIGINAL",
+                s_fullscreen ? "ON" : "OFF",
+                s_vsync ? "ON" : "OFF",
+                s_graphics_filter == GRAPHICS_FILTER_BILINEAR ? "BILINEAR" :
+                s_graphics_filter == GRAPHICS_FILTER_SCANLINES ? "SCANLINES" : "NEAREST") < 0)
+        ok = 0;
+    if (fprintf(f,
+                "\n[Sound]\n# Master volume and mute settings will be stored here.\n") < 0)
+        ok = 0;
+    if (fclose(f) != 0)
+        ok = 0;
+    return ok;
 }
 
 static bool graphics_set_vsync(void)
