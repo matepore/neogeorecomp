@@ -13,6 +13,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <time.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -31,6 +32,8 @@ static SDL_AudioDeviceID s_audio;
 static bool s_menu_open = false;
 static bool s_game_paused = false;
 static bool s_screenshot_pending = false;
+static char s_screenshot_toast[64];
+static Uint32 s_screenshot_toast_until;
 static int s_master_volume = 100;
 static bool s_audio_muted = false;
 
@@ -1644,12 +1647,20 @@ void window_audio(const int16_t *samples, size_t frames) {
     size_t sample_count, i;
     const Uint32 bytes_per_ms = NG_AUDIO_RATE * 4 / 1000;
     Uint32 queued;
+
     if (!s_audio || !frames) return;
-    if (frames > UINT32_MAX / 4) { fprintf(stderr, "[audio] output frame count is too large\n"); return; }
+    if (frames > UINT32_MAX / 4) {
+        fprintf(stderr, "[audio] output frame count is too large\n");
+        return;
+    }
     queued = SDL_GetQueuedAudioSize(s_audio);
     if (queued > 120 * bytes_per_ms) return;
+
     if (s_audio_muted || s_master_volume != 100) {
-        if (frames > SIZE_MAX / (2 * sizeof(*adjusted))) { fprintf(stderr, "[audio] output buffer is too large\n"); return; }
+        if (frames > SIZE_MAX / (2 * sizeof(*adjusted))) {
+            fprintf(stderr, "[audio] output buffer is too large\n");
+            return;
+        }
         sample_count = frames * 2;
         adjusted = (int16_t *)malloc(sample_count * sizeof(*adjusted));
         if (!adjusted) { fprintf(stderr, "[audio] cannot allocate volume buffer\n"); return; }
@@ -2266,7 +2277,8 @@ static void menu_draw_text(int x, int y, const char *text,
         {'6',{14,16,16,30,17,17,14}}, {'7',{31,1,2,4,8,8,8}},
         {'8',{14,17,17,14,17,17,14}}, {'9',{14,17,17,15,1,1,14}},
         {'-',{0,0,0,31,0,0,0}}, {':',{0,4,4,0,4,4,0}},
-        {'%',{17,2,4,8,17,0,0}},
+        {'%',{17,2,4,8,17,0,0}}, {'_',{0,0,0,0,0,0,31}},
+        {'.',{0,0,0,0,0,12,12}},
         {' ',{0,0,0,0,0,0,0}}
     };
     int cursor = x;
@@ -2306,6 +2318,42 @@ static void menu_draw_text(int x, int y, const char *text,
 }
 
 
+static void screenshot_toast_set(int success, const char *path)
+{
+    if (success && path) {
+        const char *name = strrchr(path, '/');
+        name = name ? name + 1 : path;
+        snprintf(s_screenshot_toast, sizeof s_screenshot_toast, "%s", name);
+    } else {
+        snprintf(s_screenshot_toast, sizeof s_screenshot_toast, "CHECK OUTPUT FOLDER");
+    }
+    s_screenshot_toast_until = SDL_GetTicks() + 2500;
+}
+
+static void screenshot_toast_draw(void)
+{
+    Uint32 now = SDL_GetTicks();
+    SDL_Rect panel;
+    SDL_Color color = { 240, 240, 240, 255 };
+    if (!s_screenshot_toast[0]) return;
+    if ((Sint32)(now - s_screenshot_toast_until) >= 0) {
+        s_screenshot_toast[0] = '\0';
+        return;
+    }
+    panel.x = 6; panel.y = s_canvas_h - 29;
+    panel.w = s_canvas_w - 12; panel.h = 25;
+    SDL_SetRenderDrawBlendMode(s_ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(s_ren, 8, 12, 24, 225);
+    SDL_RenderFillRect(s_ren, &panel);
+    SDL_SetRenderDrawColor(s_ren, 70, 170, 220, 255);
+    SDL_RenderDrawRect(s_ren, &panel);
+    menu_draw_text(panel.x + 5, panel.y + 2,
+                   strcmp(s_screenshot_toast, "CHECK OUTPUT FOLDER") == 0
+                       ? "SCREENSHOT FAILED" : "SCREENSHOT SAVED",
+                   1, color);
+    menu_draw_text(panel.x + 5, panel.y + 13, s_screenshot_toast, 1, color);
+    SDL_SetRenderDrawBlendMode(s_ren, SDL_BLENDMODE_NONE);
+}
 static int menu_item_count(void)
 {
     switch (s_menu_screen) {
@@ -2451,8 +2499,11 @@ static void sound_change(int option, int direction)
     } else {
         return;
     }
-    if (!settings_save()) snprintf(s_menu_status, sizeof s_menu_status, "SETTINGS SAVE FAILED");
-    else snprintf(s_menu_status, sizeof s_menu_status, "SOUND UPDATED");
+    if (!settings_save()) {
+        snprintf(s_menu_status, sizeof s_menu_status, "SETTINGS SAVE FAILED");
+    } else {
+        snprintf(s_menu_status, sizeof s_menu_status, "SOUND UPDATED");
+    }
 }
 static void menu_activate(void)
 {
@@ -3051,6 +3102,7 @@ static bool menu_run(const uint32_t *fb) {
             s_screenshot_pending = false;
             save_screenshot();
         }
+        screenshot_toast_draw();
         SDL_RenderPresent(s_ren);
         SDL_Delay(16);
     }
@@ -3094,77 +3146,74 @@ static bool menu_any_controller_button_down(void) {
 
 static int save_screenshot(void)
 {
-    int width, height;
-    uint32_t *pixels;
+    int width, height, result = -1;
+    uint32_t *pixels = NULL;
     size_t pixel_count;
     char path[160];
     time_t now;
     struct tm *local;
     static unsigned int sequence;
     char timestamp[32];
+    unsigned int attempts;
 
-    if (SDL_GetRendererOutputSize(s_ren, &width, &height) != 0 ||
-        width <= 0 || height <= 0) {
+    if (SDL_GetRendererOutputSize(s_ren, &width, &height) != 0 || width <= 0 || height <= 0) {
         fprintf(stderr, "[screenshot] renderer size: %s\n", SDL_GetError());
-        return -1;
+        goto failed;
     }
-
     if ((size_t)width > SIZE_MAX / (size_t)height / sizeof(*pixels)) {
         fprintf(stderr, "[screenshot] renderer output is too large\n");
-        return -1;
+        goto failed;
     }
-
     pixel_count = (size_t)width * (size_t)height;
     pixels = (uint32_t *)malloc(pixel_count * sizeof(*pixels));
-    if (!pixels) {
-        fprintf(stderr, "[screenshot] out of memory\n");
-        return -1;
-    }
-
-    if (SDL_RenderReadPixels(s_ren, NULL, SDL_PIXELFORMAT_ARGB8888,
-                             pixels, width * (int)sizeof(*pixels)) != 0) {
+    if (!pixels) { fprintf(stderr, "[screenshot] out of memory\n"); goto failed; }
+    if (SDL_RenderReadPixels(s_ren, NULL, SDL_PIXELFORMAT_ARGB8888, pixels, width * (int)sizeof(*pixels)) != 0) {
         fprintf(stderr, "[screenshot] readback: %s\n", SDL_GetError());
-        free(pixels);
-        return -1;
+        goto failed;
     }
-
 #ifdef _WIN32
-    (void)_mkdir("screenshots");
+    if (_mkdir("screenshots") != 0 && errno != EEXIST) {
 #else
-    (void)mkdir("screenshots", 0777);
+    if (mkdir("screenshots", 0777) != 0 && errno != EEXIST) {
 #endif
-
+        fprintf(stderr, "[screenshot] cannot create screenshots directory: %s\n", strerror(errno));
+        goto failed;
+    }
     now = time(NULL);
     local = localtime(&now);
-    if (local)
-        strftime(timestamp, sizeof timestamp, "%Y%m%d_%H%M%S", local);
-    else
-        snprintf(timestamp, sizeof timestamp, "%u", SDL_GetTicks());
+    if (local) strftime(timestamp, sizeof timestamp, "%Y%m%d_%H%M%S", local);
+    else snprintf(timestamp, sizeof timestamp, "%u", SDL_GetTicks());
 
-    do {
-        SDL_RWops *existing;
+    for (attempts = 0; attempts < 10000; attempts++) {
+        int length;
+        int written;
         ++sequence;
-        snprintf(path, sizeof path,
-                 "screenshots/magdrop3_%s_%u_%u.png",
-                 timestamp, SDL_GetTicks(), sequence);
-        existing = SDL_RWFromFile(path, "rb");
-        if (!existing)
-            break;
-        SDL_RWclose(existing);
-    } while (sequence != 0);
-
-    if (write_png(path, pixels, width, height) != 0) {
-        fprintf(stderr, "[screenshot] cannot write %s\n", path);
-        free(pixels);
-        return -1;
+        length = snprintf(path, sizeof path, "screenshots/magdrop3_%s_%u_%u.png", timestamp, SDL_GetTicks(), sequence);
+        if (length < 0 || (size_t)length >= sizeof path) {
+            fprintf(stderr, "[screenshot] filename is too long\n");
+            goto failed;
+        }
+        written = write_png_exclusive(path, pixels, width, height);
+        if (written == 0) { result = 0; break; }
+        if (written != -2) {
+            fprintf(stderr, "[screenshot] cannot write %s: %s\n", path, strerror(errno));
+            goto failed;
+        }
     }
-
-    fprintf(stderr, "[screenshot] saved %s (%dx%d)\n",
-            path, width, height);
+    if (result != 0) {
+        fprintf(stderr, "[screenshot] could not find an unused filename\n");
+        goto failed;
+    }
+    fprintf(stderr, "[screenshot] saved %s (%dx%d)\n", path, width, height);
     free(pixels);
+    screenshot_toast_set(1, path);
     return 0;
-}
 
+failed:
+    free(pixels);
+    screenshot_toast_set(0, NULL);
+    return -1;
+}
 static bool pause_run(const uint32_t *fb)
 {
     SDL_Event e;
@@ -3247,7 +3296,7 @@ static bool pause_run(const uint32_t *fb)
             s_screenshot_pending = false;
             save_screenshot();
         }
-
+        screenshot_toast_draw();
         SDL_RenderPresent(s_ren);
         SDL_Delay(16);
     }
@@ -3332,6 +3381,7 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
             s_screenshot_pending = false;
             save_screenshot();
         }
+        screenshot_toast_draw();
         SDL_RenderPresent(s_ren);
     }
 
