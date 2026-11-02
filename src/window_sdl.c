@@ -2321,15 +2321,20 @@ static void menu_draw_text(int x, int y, const char *text,
 static void screenshot_toast_set(int success, const char *path)
 {
     if (success && path) {
-        const char *name = strrchr(path, '/');
-        name = name ? name + 1 : path;
+        const char *name = path;
+        const char *p;
+
+        /* Paths are absolute and may use either platform separator. */
+        for (p = path; *p; p++) {
+            if (*p == '/' || *p == '\\')
+                name = p + 1;
+        }
         snprintf(s_screenshot_toast, sizeof s_screenshot_toast, "%s", name);
     } else {
         snprintf(s_screenshot_toast, sizeof s_screenshot_toast, "CHECK OUTPUT FOLDER");
     }
     s_screenshot_toast_until = SDL_GetTicks() + 2500;
 }
-
 static void screenshot_toast_draw(void)
 {
     Uint32 now = SDL_GetTicks();
@@ -3149,12 +3154,22 @@ static int save_screenshot(void)
     int width, height, result = -1;
     uint32_t *pixels = NULL;
     size_t pixel_count;
-    char path[160];
+    char *base_path = NULL;
+    char *directory = NULL;
+    char *path = NULL;
+    size_t base_length;
+    size_t directory_size;
+    size_t path_size;
     time_t now;
     struct tm *local;
     static unsigned int sequence;
     char timestamp[32];
     unsigned int attempts;
+#ifdef _WIN32
+    const char separator = '\\';
+#else
+    const char separator = '/';
+#endif
 
     if (SDL_GetRendererOutputSize(s_ren, &width, &height) != 0 || width <= 0 || height <= 0) {
         fprintf(stderr, "[screenshot] renderer size: %s\n", SDL_GetError());
@@ -3171,14 +3186,41 @@ static int save_screenshot(void)
         fprintf(stderr, "[screenshot] readback: %s\n", SDL_GetError());
         goto failed;
     }
-#ifdef _WIN32
-    if (_mkdir("screenshots") != 0 && errno != EEXIST) {
-#else
-    if (mkdir("screenshots", 0777) != 0 && errno != EEXIST) {
-#endif
-        fprintf(stderr, "[screenshot] cannot create screenshots directory: %s\n", strerror(errno));
+
+    /*
+     * Save screenshots beside the executable, just like settings.cfg.
+     * SDL_GetBasePath() ends with a path separator.
+     */
+    base_path = SDL_GetBasePath();
+    if (!base_path) {
+        fprintf(stderr, "[screenshot] cannot locate executable directory: %s\n", SDL_GetError());
         goto failed;
     }
+    base_length = strlen(base_path);
+    if (base_length > SIZE_MAX - sizeof("screenshots") ||
+        base_length > SIZE_MAX - 128) {
+        fprintf(stderr, "[screenshot] output path is too long\n");
+        goto failed;
+    }
+    directory_size = base_length + sizeof("screenshots");
+    path_size = base_length + 128;
+    directory = (char *)SDL_malloc(directory_size);
+    path = (char *)SDL_malloc(path_size);
+    if (!directory || !path) {
+        fprintf(stderr, "[screenshot] out of memory\n");
+        goto failed;
+    }
+    snprintf(directory, directory_size, "%sscreenshots", base_path);
+
+#ifdef _WIN32
+    if (_mkdir(directory) != 0 && errno != EEXIST) {
+#else
+    if (mkdir(directory, 0777) != 0 && errno != EEXIST) {
+#endif
+        fprintf(stderr, "[screenshot] cannot create %s: %s\n", directory, strerror(errno));
+        goto failed;
+    }
+
     now = time(NULL);
     local = localtime(&now);
     if (local) strftime(timestamp, sizeof timestamp, "%Y%m%d_%H%M%S", local);
@@ -3188,8 +3230,9 @@ static int save_screenshot(void)
         int length;
         int written;
         ++sequence;
-        length = snprintf(path, sizeof path, "screenshots/magdrop3_%s_%u_%u.png", timestamp, SDL_GetTicks(), sequence);
-        if (length < 0 || (size_t)length >= sizeof path) {
+        length = snprintf(path, path_size, "%s%c" "magdrop3_%s_%u_%u.png",
+                          directory, separator, timestamp, SDL_GetTicks(), sequence);
+        if (length < 0 || (size_t)length >= path_size) {
             fprintf(stderr, "[screenshot] filename is too long\n");
             goto failed;
         }
@@ -3205,12 +3248,18 @@ static int save_screenshot(void)
         goto failed;
     }
     fprintf(stderr, "[screenshot] saved %s (%dx%d)\n", path, width, height);
-    free(pixels);
     screenshot_toast_set(1, path);
+    free(pixels);
+    SDL_free(path);
+    SDL_free(directory);
+    SDL_free(base_path);
     return 0;
 
 failed:
     free(pixels);
+    SDL_free(path);
+    SDL_free(directory);
+    SDL_free(base_path);
     screenshot_toast_set(0, NULL);
     return -1;
 }
