@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #define popen _popen
@@ -168,57 +169,106 @@ static void put32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
 }
 
-static void chunk(FILE *f, const char *type, const uint8_t *data, size_t n) {
-    uint8_t hdr[8];
+static int chunk(FILE *f, const char *type, const uint8_t *data, size_t n) {
+    uint8_t hdr[8], cb[4];
+    uint32_t c;
+
+    if (n > UINT32_MAX)
+        return 0;
     put32(hdr, (uint32_t)n);
     memcpy(hdr + 4, type, 4);
-    fwrite(hdr, 1, 8, f);
-    if (n) fwrite(data, 1, n, f);
-    uint32_t c = crc32_update(0, hdr + 4, 4);
+    if (fwrite(hdr, 1, sizeof hdr, f) != sizeof hdr)
+        return 0;
+    if (n && fwrite(data, 1, n, f) != n)
+        return 0;
+    c = crc32_update(0, hdr + 4, 4);
     c = crc32_update(c, data, n);
-    uint8_t cb[4];
     put32(cb, c);
-    fwrite(cb, 1, 4, f);
+    return fwrite(cb, 1, sizeof cb, f) == sizeof cb;
 }
 
-int write_png(const char *path, const uint32_t *argb, int w, int h) {
-    FILE *f = fopen(path, "wb");
-    if (!f) return -1;
+/* Returns 0 on success, -2 if the path already exists, and -1 on I/O error. */
+int write_png_exclusive(const char *path, const uint32_t *argb, int w, int h) {
     static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
-    fwrite(sig, 1, 8, f);
+    FILE *f;
     uint8_t ihdr[13];
-    put32(ihdr, (uint32_t)w); put32(ihdr + 4, (uint32_t)h);
-    ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    chunk(f, "IHDR", ihdr, 13);
+    uint8_t *raw = NULL, *z = NULL, *p, *q;
+    size_t raw_n, blocks, z_n;
+    uint32_t s1 = 1, s2 = 0;
+    int ok = 0;
 
-    size_t raw_n = (size_t)h * (1 + (size_t)w * 3);
-    uint8_t *raw = (uint8_t *)malloc(raw_n);
-    uint8_t *p = raw;
+    if (!path || !argb || w <= 0 || h <= 0)
+        return -1;
+    errno = 0;
+    f = fopen(path, "wbx");
+    if (!f)
+        return errno == EEXIST ? -2 : -1;
+
+    if ((size_t)w > (SIZE_MAX - 1) / 3 ||
+        (size_t)h > SIZE_MAX / (1 + (size_t)w * 3))
+        goto cleanup;
+    raw_n = (size_t)h * (1 + (size_t)w * 3);
+    if (raw_n > SIZE_MAX - 65534)
+        goto cleanup;
+    blocks = (raw_n + 65534) / 65535;
+    if (blocks > (SIZE_MAX - raw_n - 6) / 5)
+        goto cleanup;
+    z_n = 2 + raw_n + blocks * 5 + 4;
+
+    raw = (uint8_t *)malloc(raw_n);
+    z = (uint8_t *)malloc(z_n);
+    if (!raw || !z)
+        goto cleanup;
+
+    p = raw;
     for (int y = 0; y < h; y++) {
         *p++ = 0;
         for (int x = 0; x < w; x++) {
-            uint32_t c = argb[y * w + x];
-            *p++ = (uint8_t)(c >> 16); *p++ = (uint8_t)(c >> 8); *p++ = (uint8_t)c;
+            uint32_t c = argb[(size_t)y * (size_t)w + (size_t)x];
+            *p++ = (uint8_t)(c >> 16);
+            *p++ = (uint8_t)(c >> 8);
+            *p++ = (uint8_t)c;
         }
     }
-    size_t blocks = (raw_n + 65534) / 65535;
-    size_t z_n = 2 + raw_n + blocks * 5 + 4;
-    uint8_t *z = (uint8_t *)malloc(z_n), *q = z;
+
+    q = z;
     *q++ = 0x78; *q++ = 0x01;
-    uint32_t s1 = 1, s2 = 0;
     for (size_t off = 0; off < raw_n; off += 65535) {
         size_t len = raw_n - off < 65535 ? raw_n - off : 65535;
         *q++ = (off + len == raw_n) ? 1 : 0;
         *q++ = (uint8_t)len; *q++ = (uint8_t)(len >> 8);
         *q++ = (uint8_t)~len; *q++ = (uint8_t)(~len >> 8);
         memcpy(q, raw + off, len);
-        for (size_t i = 0; i < len; i++) { s1 = (s1 + raw[off + i]) % 65521; s2 = (s2 + s1) % 65521; }
+        for (size_t i = 0; i < len; i++) {
+            s1 = (s1 + raw[off + i]) % 65521;
+            s2 = (s2 + s1) % 65521;
+        }
         q += len;
     }
-    put32(q, (s2 << 16) | s1); q += 4;
-    chunk(f, "IDAT", z, (size_t)(q - z));
-    chunk(f, "IEND", NULL, 0);
-    free(raw); free(z);
-    fclose(f);
+    put32(q, (s2 << 16) | s1);
+    q += 4;
+
+    if (fwrite(sig, 1, sizeof sig, f) != sizeof sig)
+        goto cleanup;
+    put32(ihdr, (uint32_t)w);
+    put32(ihdr + 4, (uint32_t)h);
+    ihdr[8] = 8; ihdr[9] = 2;
+    ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+    if (!chunk(f, "IHDR", ihdr, sizeof ihdr) ||
+        !chunk(f, "IDAT", z, (size_t)(q - z)) ||
+        !chunk(f, "IEND", NULL, 0))
+        goto cleanup;
+    ok = 1;
+
+cleanup:
+    free(raw);
+    free(z);
+    if (fclose(f) != 0)
+        ok = 0;
+    if (!ok) {
+        remove(path);
+        errno = EIO;
+        return -1;
+    }
     return 0;
 }

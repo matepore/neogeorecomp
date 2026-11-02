@@ -96,7 +96,7 @@ void platform_audio(const int16_t *samples, size_t frames);
 int  platform_wav(const char *path);      /* also write the audio to a WAV file */
 void platform_mute(void);                 /* no sound from the window */
 void platform_shutdown(void);
-int  write_png(const char *path, const uint32_t *argb, int w, int h);
+int  write_png_exclusive(const char *path, const uint32_t *argb, int w, int h);
 
 /* ---- window (window_sdl.c, or stubs in platform.c without SDL2) ---- */
 int  window_open(const char *title, int scale);
