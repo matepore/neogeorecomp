@@ -270,7 +270,7 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
         platform_audio(samples, audio_take_samples(samples, 4096));
         for (int i = 0; i < o.nshots; i++)
             if (o.shots[i].frame == frame) {
-                if (write_png(o.shots[i].path, s_fb, NG_SCREEN_W, NG_SCREEN_H))
+                if (write_png_exclusive(o.shots[i].path, s_fb, NG_SCREEN_W, NG_SCREEN_H))
                     fprintf(stderr, "error: cannot write %s\n", o.shots[i].path);
                 else
                     fprintf(stderr, "[neogeorecomp] frame %ld -> %s\n", frame, o.shots[i].path);
