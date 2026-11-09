@@ -94,7 +94,7 @@ static int path_in_dir(char *out, size_t out_size,
 {
     size_t length = strlen(directory);
     int separator = length > 0 &&
-        directory[length - 1] != '/' && directory[length - 1] != '\\\\';
+        directory[length - 1] != '/' && directory[length - 1] != '\\';
     int written = snprintf(out, out_size, "%s%s%s",
                            directory, separator ? "/" : "", name);
     return written < 0 || (size_t)written >= out_size ? -1 : 0;
