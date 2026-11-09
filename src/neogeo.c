@@ -230,7 +230,7 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
             if (!o.rom_path) {
                 if (path_in_dir(default_rom_dir, sizeof(default_rom_dir),
                                 executable_dir, "rom") != 0) {
-                    fprintf(stderr, "error: executable path is too long\\n");
+                    fprintf(stderr, "error: executable path is too long\n");
                     return 1;
                 }
                 o.rom_path = default_rom_dir;
@@ -241,7 +241,7 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
                 } else {
                     if (path_in_dir(default_bios_dir, sizeof(default_bios_dir),
                                     executable_dir, "bios") != 0) {
-                        fprintf(stderr, "error: executable path is too long\\n");
+                        fprintf(stderr, "error: executable path is too long\n");
                         return 1;
                     }
                     o.bios_path = default_bios_dir;
