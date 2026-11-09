@@ -4,7 +4,7 @@ Every game built on neogeorecomp is one executable whose `main()` calls `ng_main
 
 ## ROM files
 
-The runtime reads unzipped files from `--rom-path` (default `roms`):
+The runtime reads unzipped files from `--rom-path`. When no path is supplied, it looks for a `rom/` directory beside the executable. The system BIOS is loaded from `bios/` beside the executable by default. If `--rom-path` is supplied without `--bios-path`, the BIOS directory defaults to the supplied ROM directory for backward compatibility:
 
 - **The game's set**, named as in MAME, e.g. `201-p1.p1`, `201-s1.s1`, `201-c1.c1`..`201-c4.c4`, `201-m1.m1`, `201-v1.v1`, `201-v2.v2`.
 - **From the `neogeo` system set** (`--bios-path`, default the ROM path): `sp-s2.sp1` (MVS Asia/Europe v2, selectable with `--bios`), `sfix.sfix`, `sm1.sm1`, and `000-lo.lo` (the sprite shrink table).
@@ -19,9 +19,11 @@ error: missing ROM files; see docs/running.md for the expected set
 ## Options
 
 ```
-  --rom-path DIR        game ROM files (default: roms)
-  --bios-path DIR       system ROM files (default: the ROM path)
-  --bios FILE           system ROM (default: sp-s2.sp1, MVS Asia/Europe)
+  --rom-path DIR        game ROM files (default: rom beside the executable)
+  --bios-path DIR       system ROM files (default: bios beside the executable;
+                        the ROM path when --rom-path is explicitly supplied)
+  --bios FILE           system ROM (default: configured at build time, otherwise
+                        sp-s2.sp1 for MVS Asia/Europe)
   --headless            no window; run as fast as possible
   --record FILE.mp4     pipe frames to ffmpeg
   --frames N            stop after N frames

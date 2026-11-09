@@ -16,6 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef NG_DEFAULT_BIOS_NAME
+#define NG_DEFAULT_BIOS_NAME "sp-s2.sp1"
+#endif
+
 int64_t ng_frame_start;
 
 static uint32_t s_fb[NG_SCREEN_W * NG_SCREEN_H];
@@ -53,7 +57,7 @@ static void usage(const char *prog) {
 
 static int parse_args(int argc, char **argv, options_t *o) {
     memset(o, 0, sizeof(*o));
-    o->rom_path = "roms"; o->scale = 3; o->frames = -1; o->bios_name = "sp-s2.sp1";
+    o->rom_path = NULL; o->scale = 3; o->frames = -1; o->bios_name = NG_DEFAULT_BIOS_NAME;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *next = i + 1 < argc ? argv[i + 1] : NULL;
@@ -81,8 +85,19 @@ static int parse_args(int argc, char **argv, options_t *o) {
         else if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(argv[0]); exit(0); }
         else { usage(argv[0]); return -1; }
     }
-    if (!o->bios_path) o->bios_path = o->rom_path;
     return 0;
+}
+
+/* Resolve the default data directories relative to the executable. */
+static int path_in_dir(char *out, size_t out_size,
+                       const char *directory, const char *name)
+{
+    size_t length = strlen(directory);
+    int separator = length > 0 &&
+        directory[length - 1] != '/' && directory[length - 1] != '\\\\';
+    int written = snprintf(out, out_size, "%s%s%s",
+                           directory, separator ? "/" : "", name);
+    return written < 0 || (size_t)written >= out_size ? -1 : 0;
 }
 
 /* ---- scripted input ---- */
@@ -202,8 +217,42 @@ static void power_on(void) {
 int ng_main(int argc, char **argv, const ng_game_t *game,
             const ng_func_entry_t *funcs, size_t nfuncs) {
     options_t o;
+    char executable_dir[4096];
+    char default_rom_dir[4120];
+    char default_bios_dir[4120];
+    int custom_rom_path;
     platform_early_init();
     if (parse_args(argc, argv, &o)) return 2;
+
+    custom_rom_path = o.rom_path != NULL;
+    if (!o.rom_path || !o.bios_path) {
+        if (platform_get_base_path(executable_dir, sizeof(executable_dir)) == 0) {
+            if (!o.rom_path) {
+                if (path_in_dir(default_rom_dir, sizeof(default_rom_dir),
+                                executable_dir, "rom") != 0) {
+                    fprintf(stderr, "error: executable path is too long\\n");
+                    return 1;
+                }
+                o.rom_path = default_rom_dir;
+            }
+            if (!o.bios_path) {
+                if (custom_rom_path) {
+                    o.bios_path = o.rom_path;
+                } else {
+                    if (path_in_dir(default_bios_dir, sizeof(default_bios_dir),
+                                    executable_dir, "bios") != 0) {
+                        fprintf(stderr, "error: executable path is too long\\n");
+                        return 1;
+                    }
+                    o.bios_path = default_bios_dir;
+                }
+            }
+        } else {
+            if (!o.rom_path) o.rom_path = "rom";
+            if (!o.bios_path)
+                o.bios_path = custom_rom_path ? o.rom_path : "bios";
+        }
+    }
 
     if (o.capture_controller) {
         char binding[64];

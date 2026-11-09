@@ -11,6 +11,10 @@
 #include <string.h>
 #include <errno.h>
 
+#ifdef NG_HAVE_SDL
+#include <SDL.h>
+#endif
+
 #ifdef _WIN32
 #define popen _popen
 #define pclose _pclose
@@ -58,6 +62,31 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep) {
 #endif
 
 static int s_headless;
+
+/* SDL returns the executable directory with a trailing path separator. */
+int platform_get_base_path(char *buffer, size_t buffer_size) {
+#ifdef NG_HAVE_SDL
+    char *path = SDL_GetBasePath();
+    size_t length;
+
+    if (!path)
+        return -1;
+
+    length = strlen(path);
+    if (length >= buffer_size) {
+        SDL_free(path);
+        return -1;
+    }
+
+    memcpy(buffer, path, length + 1);
+    SDL_free(path);
+    return 0;
+#else
+    (void)buffer;
+    (void)buffer_size;
+    return -1;
+#endif
+}
 
 void platform_early_init(void) {
 #ifdef _WIN32

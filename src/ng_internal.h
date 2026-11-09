@@ -90,6 +90,7 @@ extern uint64_t exec_native_blocks, exec_interp_instrs;
 
 /* ---- host platform (platform.c) ---- */
 void platform_early_init(void);       /* crash reporting; call first */
+int  platform_get_base_path(char *buffer, size_t buffer_size);
 int  platform_init(const char *title, int scale, int headless, const char *record_path);
 bool platform_frame(const uint32_t *fb, ng_input_t *in);  /* false = quit */
 void platform_audio(const int16_t *samples, size_t frames);
